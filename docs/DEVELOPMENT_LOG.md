@@ -69,3 +69,10 @@ Remaining immediate work:
 - Complete GitHub CLI sudo authentication.
 - Initialize Git, create GitHub repository and push.
 - Verify remote contents after push.
+
+## 2026-11-27 — Local Git checkpoint
+
+- Initialized Git repository on branch `main`.
+- Local root commit: `f23887e` (`feat: launch NanZip with compression and macOS extensions`).
+- Working tree contains the complete source, extension packaging, entitlements, tests and research documentation.
+- GitHub CLI login has reached GitHub sudo-mode confirmation. Manual account authentication is required before repository creation and push.

@@ -5,6 +5,7 @@ Updated: 2026-11-27 (Asia/Shanghai)
 ## What is already implemented
 
 - Project location: `/Users/gxmlfx/Projects/NanZip`
+- GitHub repository: https://github.com/gxmlfx/NanZip
 - Native SwiftUI app: `NanZip`
 - Shared library: `NanZipCore`
 - Finder Sync extension: `NanZipFinder`
@@ -26,7 +27,6 @@ Updated: 2026-11-27 (Asia/Shanghai)
 
 ## Known caveats
 
-- GitHub CLI authorization is pending sudo-mode account confirmation.
 - RAR extraction has not yet been fixture-tested.
 - Symlinks are currently listed but skipped during extraction.
 - Quick Look in the presence of ArcZip may select ArcZip due to extension precedence. Temporarily ignoring ArcZip confirmed NanZip Quick Look loads.

@@ -19,6 +19,7 @@ Minimum deployment target: macOS 14
 - Xcode user data: `/Volumes/APFS P Drive/XcodeData/Developer`
 - Build cache: `/Volumes/APFS P Drive/XcodeData/NanZipBuild`
 - Installed app: `/Volumes/APFS P Drive/Applications/NanZip.app`
+- GitHub: https://github.com/gxmlfx/NanZip
 
 ## Architecture
 
@@ -53,7 +54,7 @@ Minimum deployment target: macOS 14
 - Encrypted ZIP round-trip: passing.
 - RAR fixture test: pending.
 - Notarization: pending.
-- GitHub remote: pending at the time this file was written.
+- GitHub remote: https://github.com/gxmlfx/NanZip (main pushed and verified)
 
 ## Build
 

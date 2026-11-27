@@ -2,6 +2,8 @@
 
 NanZip 是一个使用 SwiftUI 和系统 `libarchive` 构建的原生 macOS 归档工具。
 
+GitHub: https://github.com/gxmlfx/NanZip
+
 ## 功能
 
 - 浏览 ZIP、7Z、RAR、TAR、GZ、BZ2、XZ、ZST 等归档

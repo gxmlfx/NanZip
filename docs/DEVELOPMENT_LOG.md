@@ -76,3 +76,14 @@ Remaining immediate work:
 - Local root commit: `f23887e` (`feat: launch NanZip with compression and macOS extensions`).
 - Working tree contains the complete source, extension packaging, entitlements, tests and research documentation.
 - GitHub CLI login has reached GitHub sudo-mode confirmation. Manual account authentication is required before repository creation and push.
+
+
+## 2026-11-27 — GitHub publication
+
+- Created public repository: https://github.com/gxmlfx/NanZip
+- Added `origin` as `https://github.com/gxmlfx/NanZip.git`.
+- Pushed branch `main` successfully.
+- Initial commits published:
+  - `f23887e` feature implementation
+  - `1c769a1` local checkpoint and handoff docs
+- Next documentation commit records the verified remote and final project state.

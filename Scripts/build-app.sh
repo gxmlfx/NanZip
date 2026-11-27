@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DEVELOPER_DIR="${DEVELOPER_DIR:-/Volumes/APFS P Drive/Applications/Xcode.app/Contents/Developer}"
-SCRATCH="${NANZIP_SCRATCH:-/Volumes/APFS P Drive/XcodeData/NanZipBuild}"
+DEVELOPER_DIR="${DEVELOPER_DIR:-$(/usr/bin/xcode-select -p)}"
+SCRATCH="${NANZIP_SCRATCH:-$HOME/Library/Developer/NanZipBuild}"
 SIGN_IDENTITY="${NANZIP_SIGN_IDENTITY:--}"
 APP="$ROOT/build/NanZip.app"
 STAGE_APP="$SCRATCH/NanZip.app"
@@ -73,9 +73,10 @@ rm -rf "$APP"
 mkdir -p "$ROOT/build"
 ditto "$STAGE_APP" "$APP"
 
-EXTERNAL_APP="/Volumes/APFS P Drive/Applications/NanZip.app"
-if [ -d "/Volumes/APFS P Drive/Applications" ]; then
+if [ -n "${NANZIP_INSTALL_APP:-}" ]; then
+  EXTERNAL_APP="$NANZIP_INSTALL_APP"
   rm -rf "$EXTERNAL_APP"
+  mkdir -p "$(dirname "$EXTERNAL_APP")"
   ditto "$STAGE_APP" "$EXTERNAL_APP"
   /usr/bin/xattr -cr "$EXTERNAL_APP" 2>/dev/null || true
   /usr/bin/codesign --force --options runtime --sign "$SIGN_IDENTITY" \

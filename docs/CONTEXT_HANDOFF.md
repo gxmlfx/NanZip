@@ -4,8 +4,8 @@ Updated: 2026-11-27 (Asia/Shanghai)
 
 ## What is already implemented
 
-- Project location: `/Users/gxmlfx/Projects/NanZip`
-- GitHub repository: https://github.com/gxmlfx/NanZip
+- Project location: `$HOME/Projects/NanZip`
+- GitHub repository: `https://github.com/<GITHUB_OWNER>/NanZip`
 - Native SwiftUI app: `NanZip`
 - Shared library: `NanZipCore`
 - Finder Sync extension: `NanZipFinder`
@@ -23,7 +23,7 @@ Updated: 2026-11-27 (Asia/Shanghai)
 - Finder submenu `NanZip > 压缩 / 解压` was displayed.
 - Quick Look displayed `archive.zip` entries.
 - AES-256 ZIP and all compression-format smoke tests passed.
-- Recommended local signing identity: `Apple Development: gxmlfx@icloud.com (48CV566UYY)`.
+- Signing identity: use `$NANZIP_SIGN_IDENTITY` / `<APPLE_DEVELOPMENT_IDENTITY>` locally.
 
 ## Known caveats
 
@@ -37,8 +37,8 @@ Updated: 2026-11-27 (Asia/Shanghai)
 ## Commands
 
 ```sh
-cd /Users/gxmlfx/Projects/NanZip
-NANZIP_SIGN_IDENTITY="Apple Development: gxmlfx@icloud.com (48CV566UYY)" ./Scripts/build-app.sh
+cd "$HOME/Projects/NanZip"
+NANZIP_SIGN_IDENTITY="<APPLE_DEVELOPMENT_IDENTITY>" ./Scripts/build-app.sh
 ```
 
 ## Read next

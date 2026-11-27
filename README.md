@@ -2,7 +2,7 @@
 
 NanZip 是一个使用 SwiftUI 和系统 `libarchive` 构建的原生 macOS 归档工具。
 
-GitHub: https://github.com/gxmlfx/NanZip
+GitHub: https://github.com/<GITHUB_OWNER>/NanZip
 
 ## 功能
 
@@ -20,14 +20,14 @@ GitHub: https://github.com/gxmlfx/NanZip
 ## 构建
 
 ```sh
-cd /Users/gxmlfx/Projects/NanZip
-NANZIP_SIGN_IDENTITY="Apple Development: gxmlfx@icloud.com (48CV566UYY)" ./Scripts/build-app.sh
+cd "$HOME/Projects/NanZip"
+NANZIP_SIGN_IDENTITY="<APPLE_DEVELOPMENT_IDENTITY>" ./Scripts/build-app.sh
 ```
 
 构建产物：
 
 - 本地：`build/NanZip.app`
-- 安装位置：`/Volumes/APFS P Drive/Applications/NanZip.app`
+- 安装位置：`$NANZIP_INSTALL_APP`
 
 ## 目录结构
 

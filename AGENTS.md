@@ -4,7 +4,7 @@ Before changing code:
 
 1. Read `docs/PROJECT_STATE.md`, `docs/DEVELOPMENT_LOG.md`, `docs/CONTEXT_HANDOFF.md`, and the relevant section of `docs/ROADMAP.md`.
 2. Run `git status` and inspect the latest commit.
-3. Build with `NANZIP_SIGN_IDENTITY="Apple Development: gxmlfx@icloud.com (48CV566UYY)" ./Scripts/build-app.sh`.
+3. Build with `NANZIP_SIGN_IDENTITY="<APPLE_DEVELOPMENT_IDENTITY>" ./Scripts/build-app.sh`.
 
 Development constraints:
 

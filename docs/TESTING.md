@@ -3,14 +3,17 @@
 ## Build
 
 ```sh
-cd /Users/gxmlfx/Projects/NanZip
-NANZIP_SIGN_IDENTITY="Apple Development: gxmlfx@icloud.com (48CV566UYY)" ./Scripts/build-app.sh
+NANZIP_ROOT="$HOME/Projects/NanZip"
+NANZIP_APP="$HOME/Applications/NanZip.app"
+NANZIP_BUNDLE_PREFIX="<BUNDLE_PREFIX>"
+cd "$NANZIP_ROOT"
+NANZIP_SIGN_IDENTITY="<APPLE_DEVELOPMENT_IDENTITY>" ./Scripts/build-app.sh
 ```
 
 ## Extraction self-test
 
 ```sh
-APP="/Volumes/APFS P Drive/Applications/NanZip.app/Contents/MacOS/NanZip"
+APP="$NANZIP_APP/Contents/MacOS/NanZip"
 "$APP" --self-test archive.zip /tmp/nanzip-extract
 ```
 
@@ -38,13 +41,13 @@ APP="/Volumes/APFS P Drive/Applications/NanZip.app/Contents/MacOS/NanZip"
 ## Extension registration
 
 ```sh
-APP="/Volumes/APFS P Drive/Applications/NanZip.app"
+APP="$NANZIP_APP"
 pluginkit -a "$APP/Contents/PlugIns/NanZipFinder.appex"
 pluginkit -a "$APP/Contents/PlugIns/NanZipQuickLook.appex"
-pluginkit -e use -i com.gxmlfx.nanzip.finder
-pluginkit -e use -i com.gxmlfx.nanzip.quicklook
-pluginkit -mAv -i com.gxmlfx.nanzip.finder
-pluginkit -mAv -i com.gxmlfx.nanzip.quicklook
+pluginkit -e use -i "${NANZIP_BUNDLE_PREFIX}.nanzip.finder"
+pluginkit -e use -i "${NANZIP_BUNDLE_PREFIX}.nanzip.quicklook"
+pluginkit -mAv -i "${NANZIP_BUNDLE_PREFIX}.nanzip.finder"
+pluginkit -mAv -i "${NANZIP_BUNDLE_PREFIX}.nanzip.quicklook"
 ```
 
 ## Important signing rule

@@ -14,12 +14,12 @@ Minimum deployment target: macOS 14
 
 ## Canonical paths
 
-- Project: `/Users/gxmlfx/Projects/NanZip`
-- Xcode: `/Volumes/APFS P Drive/Applications/Xcode.app`
-- Xcode user data: `/Volumes/APFS P Drive/XcodeData/Developer`
-- Build cache: `/Volumes/APFS P Drive/XcodeData/NanZipBuild`
-- Installed app: `/Volumes/APFS P Drive/Applications/NanZip.app`
-- GitHub: https://github.com/gxmlfx/NanZip
+- Project: `$HOME/Projects/NanZip`
+- Xcode developer directory: `$DEVELOPER_DIR`
+- Xcode user data: `$NANZIP_XCODE_DATA`
+- Build cache: `$NANZIP_SCRATCH`
+- Installed app: `$NANZIP_INSTALL_APP`
+- GitHub: https://github.com/<GITHUB_OWNER>/NanZip
 
 ## Architecture
 
@@ -54,13 +54,13 @@ Minimum deployment target: macOS 14
 - Encrypted ZIP round-trip: passing.
 - RAR fixture test: pending.
 - Notarization: pending.
-- GitHub remote: https://github.com/gxmlfx/NanZip (main pushed and verified)
+- GitHub remote: `https://github.com/<GITHUB_OWNER>/NanZip` (main pushed and verified)
 
 ## Build
 
 ```sh
-cd /Users/gxmlfx/Projects/NanZip
-NANZIP_SIGN_IDENTITY="Apple Development: gxmlfx@icloud.com (48CV566UYY)" ./Scripts/build-app.sh
+cd "$HOME/Projects/NanZip"
+NANZIP_SIGN_IDENTITY="<APPLE_DEVELOPMENT_IDENTITY>" ./Scripts/build-app.sh
 ```
 
 ## Resume instructions

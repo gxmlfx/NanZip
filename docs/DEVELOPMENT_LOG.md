@@ -20,7 +20,7 @@ Work completed so far:
   - `glassEffect(_:in:)` is available macOS 26+.
   - `GlassEffectContainer` is available macOS 26+.
   - `.buttonStyle(.glass)` and `.glassProminent` are available macOS 26+.
-- Moved the source from the temporary output directory to `/Users/gxmlfx/Projects/NanZip`.
+- Moved the source from the temporary output directory to `$HOME/Projects/NanZip`.
 
 Next actions:
 
@@ -80,8 +80,8 @@ Remaining immediate work:
 
 ## 2026-11-27 — GitHub publication
 
-- Created public repository: https://github.com/gxmlfx/NanZip
-- Added `origin` as `https://github.com/gxmlfx/NanZip.git`.
+- Created public repository: `https://github.com/<GITHUB_OWNER>/NanZip`.
+- Added `origin` as `https://github.com/<GITHUB_OWNER>/NanZip.git`.
 - Pushed branch `main` successfully.
 - Initial commits published:
   - `f23887e` feature implementation

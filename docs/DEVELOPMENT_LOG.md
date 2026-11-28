@@ -128,3 +128,58 @@ Verification:
 - 7-Zip executable is signed inside the app and runs from the bundle.
 - Finder and Quick Look extension packaging still signs successfully.
 - Feature gap checklist: `docs/BANDIZIP_FEATURE_GAP.md`.
+
+## 2026-11-28 — NanZip 0.4 archive-manager expansion
+
+User requirements:
+
+- Split/multi-volume compression.
+- Filename encoding and code-page selection.
+- Smart Extract, Extract Here and extract-to-folder shortcuts.
+- Column width/order/visibility customization.
+- In-archive image/document/audio preview.
+- Direct nested-archive browsing.
+- Password manager.
+- Archive repair.
+- Batch compression/extraction and advanced overwrite rules.
+- Finder Quick Actions and default archive application setting.
+- Main-app sandbox and independent XPC archive service.
+
+Implemented:
+
+- Added `volumeSizeBytes` to compression options and 7-Zip `-v...b` support for direct and filter-stage archive creation.
+- Added safe volume installation/renaming and first-volume detection for `.001` inputs.
+- Added compression UI presets: none, 10 MB, 50 MB, 100 MB and 500 MB.
+- Added automatic/UTF-8/CP437/CP936/CP932 ZIP legacy filename decoding by parsing central-directory names, mapping 7-Zip output paths and renaming extracted files.
+- Added ZIP code-page method parameter for creation.
+- Added `ExtractionDestinationPolicy` with Smart Extract, Here, archive-named folder and custom folder logic.
+- Expanded overwrite policies to keep-both, overwrite, skip, newer-only and ask.
+- Added native `TableColumnCustomization` with stable IDs and `AppStorage` JSON persistence.
+- Added single-entry preview extraction and a Quick Look inspector. Nested archives are handled by NanZip's own browser rather than a third-party preview extension.
+- Added nested archive breadcrumbs, back navigation and temporary cleanup.
+- Added Keychain password storage, retrieval, listing and deletion.
+- Added ZIP local-header salvage repair for unencrypted Store/Deflate entries, writing only to a new archive copy.
+- Added sequential batch queue for extraction/compression with per-item status and current-item cancellation.
+- Added Finder Sync smart/here/folder actions.
+- Added three `NSServices` Quick Actions and app delegate handlers.
+- Added the `NSWorkspace` default-application helper for ZIP.
+- Added embedded `NanZipXPCService` product, Codable request/response protocol, operation IDs, cancellation and client-side connection wrapper.
+- Routed archive listing/extraction/compression/editing/testing/preview/repair through the XPC bridge when running from the signed app bundle.
+- Added main-app App Sandbox entitlements and XPC/helper packaging/signing to `Scripts/build-app.sh`.
+- Bumped version to 0.4.0 (build 4).
+
+Verification:
+
+- Split ZIP/7Z/TAR.GZ creation and `.001` extraction passed.
+- Encrypted split ZIP round-trip passed.
+- CP437 and CP936 legacy ZIP filename extraction/remapping passed.
+- ZIP repair copy from destroyed central directory passed.
+- Keep-both/skip/overwrite behavior passed.
+- Installed app XPC list/extract round-trip passed.
+- Keychain save/read/list/delete round-trip passed.
+- Two-archive batch extraction through GUI/XPC passed.
+- GUI archive preview, nested archive browser and native column hide/show passed.
+- Full app, XPC, Finder and Quick Look bundles build, sign and deep-verify.
+- Main app entitlement dump confirms App Sandbox and user-selected read/write.
+
+Known follow-up work is recorded in `docs/BANDIZIP_FEATURE_GAP.md`, notably RAR fixtures, CP932 fixture, TAR.BZ2/XZ split fixtures, notarization, and a fully sandboxed XPC file-access bridge for Mac App Store distribution.

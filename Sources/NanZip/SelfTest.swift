@@ -13,10 +13,18 @@ enum NanZipSelfTest {
             runExtractionTest(arguments: arguments)
         case "--compress-test":
             runCompressionTest(arguments: arguments)
+        case "--volume-test":
+            runVolumeTest(arguments: arguments)
         case "--replace-test":
             runReplaceTest(arguments: arguments)
         case "--delete-test":
             runDeleteTest(arguments: arguments)
+        case "--repair-test":
+            runRepairTest(arguments: arguments)
+        case "--xpc-test":
+            runXPCTest(arguments: arguments)
+        case "--keychain-test":
+            runKeychainTest()
         default:
             usage()
         }
@@ -26,22 +34,31 @@ enum NanZipSelfTest {
         guard arguments.count >= 4 else { usage() }
         let archiveURL = URL(fileURLWithPath: arguments[2])
         let destinationURL = URL(fileURLWithPath: arguments[3])
-        let password = arguments.count >= 5 ? arguments[4] : nil
-        let token = CancellationToken()
-
+        let password = arguments.count >= 5 && arguments[4] != "-" ? arguments[4] : nil
+        let encoding = arguments.count >= 6
+            ? (ArchiveFilenameEncoding(rawValue: arguments[5]) ?? .automatic)
+            : .automatic
+        let overwritePolicy = arguments.count >= 7
+            ? (ArchiveOverwritePolicy(rawValue: arguments[6]) ?? .keepBoth)
+            : .keepBoth
         do {
-            let items = try ArchiveService.listArchive(at: archiveURL, password: password)
-            let totalBytes = items.reduce(Int64(0)) { $0 + ($1.isDirectory ? 0 : $1.size) }
-            let summary = try ArchiveService.extract(
-                archiveURL: archiveURL,
-                destinationURL: destinationURL,
-                selectedPaths: nil,
-                totalBytes: totalBytes,
+            let listRequest = ArchiveXPCRequest(
+                operation: .list,
+                archivePath: archiveURL.path,
                 password: password,
-                overwritePolicy: .keepBoth,
-                cancellationToken: token,
-                progress: { _ in }
+                filenameEncoding: encoding
             )
+            let items = try ArchiveOperationBridge.list(listRequest)
+            let totalBytes = items.reduce(Int64(0)) { $0 + ($1.isDirectory ? 0 : $1.size) }
+            let extractRequest = ArchiveXPCRequest(
+                operation: .extract,
+                archivePath: archiveURL.path,
+                destinationPath: destinationURL.path,
+                password: password,
+                overwritePolicy: overwritePolicy,
+                filenameEncoding: encoding
+            )
+            let summary = try ArchiveOperationBridge.extract(extractRequest)
             print("items=\(items.count)")
             print("extracted=\(summary.extractedFiles)")
             print("skipped=\(summary.skippedEntries)")
@@ -67,15 +84,65 @@ enum NanZipSelfTest {
         let options = CompressionOptions(format: format, level: level, password: password)
         let token = CancellationToken()
         do {
-            let summary = try CompressionService.createArchive(
-                inputURLs: inputURLs,
-                destinationURL: destinationURL,
-                options: options,
+            let request = ArchiveXPCRequest(
+                operation: .compress,
+                destinationPath: destinationURL.path,
+                inputPaths: inputURLs.map(\.path),
+                password: options.password,
+                compressionOptions: options
+            )
+            let summary = try ArchiveOperationBridge.compress(
+                request,
                 cancellationToken: token,
                 progress: { _ in }
             )
             print("entries=\(summary.addedEntries)")
             print("bytes=\(summary.inputBytes)")
+            print("output=\(summary.outputURL.path)")
+            exit(0)
+        } catch {
+            fail(error)
+        }
+    }
+
+    private static func runVolumeTest(arguments: [String]) -> Never {
+        guard arguments.count >= 7 else { usage() }
+        let formatRaw = arguments[2]
+        let destinationURL = URL(fileURLWithPath: arguments[3])
+        let levelRaw = Int(arguments[4]) ?? 6
+        let password = arguments[5] == "-" ? nil : arguments[5]
+        let volumeMB = Int64(arguments[6]) ?? 1
+        let inputURLs = arguments.dropFirst(7).map { URL(fileURLWithPath: $0) }
+        guard let format = CompressionFormat(rawValue: formatRaw),
+              let level = CompressionLevel(rawValue: levelRaw) else {
+            usage()
+        }
+
+        let options = CompressionOptions(
+            format: format,
+            level: level,
+            password: password,
+            volumeSizeBytes: max(volumeMB, 1) * 1_024 * 1_024
+        )
+        let token = CancellationToken()
+        do {
+            let request = ArchiveXPCRequest(
+                operation: .compress,
+                destinationPath: destinationURL.path,
+                inputPaths: inputURLs.map(\.path),
+                password: options.password,
+                compressionOptions: options
+            )
+            let summary = try ArchiveOperationBridge.compress(
+                request,
+                cancellationToken: token,
+                progress: { _ in }
+            )
+            let items = try ArchiveOperationBridge.list(
+                ArchiveXPCRequest(operation: .list, archivePath: summary.outputURL.path, password: password)
+            )
+            print("entries=\(summary.addedEntries)")
+            print("listed=\(items.count)")
             print("output=\(summary.outputURL.path)")
             exit(0)
         } catch {
@@ -91,15 +158,17 @@ enum NanZipSelfTest {
         let password = arguments[5] == "-" ? nil : arguments[5]
         let token = CancellationToken()
         do {
-            let summary = try ArchiveEditingService.replaceEntries(
-                in: archiveURL,
-                replacements: [
-                    ArchiveReplacement(archivePath: archivePath, sourceURL: sourceURL)
-                ],
+            let request = ArchiveXPCRequest(
+                operation: .replace,
+                archivePath: archiveURL.path,
                 password: password,
-                cancellationToken: token
+                replacements: [ArchiveXPCReplacement(archivePath: archivePath, sourcePath: sourceURL.path)]
             )
-            let items = try ArchiveService.listArchive(at: archiveURL, password: password)
+            let changed = try ArchiveOperationBridge.edit(request, cancellationToken: token)
+            let summary = ArchiveEditSummary(changedEntries: changed, archiveURL: archiveURL)
+            let items = try ArchiveOperationBridge.list(
+                ArchiveXPCRequest(operation: .list, archivePath: archiveURL.path, password: password)
+            )
             print("changed=\(summary.changedEntries)")
             print("items=\(items.count)")
             print("archive=\(archiveURL.path)")
@@ -116,13 +185,100 @@ enum NanZipSelfTest {
         let password = arguments[4] == "-" ? nil : arguments[4]
         let token = CancellationToken()
         do {
-            let summary = try ArchiveEditingService.deleteEntries(
-                from: archiveURL,
-                paths: [archivePath],
-                password: password,
-                cancellationToken: token
+            let request = ArchiveXPCRequest(
+                operation: .delete,
+                archivePath: archiveURL.path,
+                selectedPaths: [archivePath],
+                password: password
             )
+            let changed = try ArchiveOperationBridge.edit(request, cancellationToken: token)
+            let summary = ArchiveEditSummary(changedEntries: changed, archiveURL: archiveURL)
             print("changed=\(summary.changedEntries)")
+            exit(0)
+        } catch {
+            fail(error)
+        }
+    }
+
+    private static func runRepairTest(arguments: [String]) -> Never {
+        guard arguments.count >= 5 else { usage() }
+        let archiveURL = URL(fileURLWithPath: arguments[2])
+        let destinationURL = URL(fileURLWithPath: arguments[3])
+        let password = arguments[4] == "-" ? nil : arguments[4]
+        do {
+            let options = CompressionOptions(
+                format: .zip,
+                level: .balanced,
+                password: password,
+                filenameEncoding: .automatic
+            )
+            let request = ArchiveXPCRequest(
+                operation: .repair,
+                archivePath: archiveURL.path,
+                destinationPath: destinationURL.path,
+                password: password,
+                compressionOptions: options
+            )
+            let summary = try ArchiveOperationBridge.repair(
+                request,
+                cancellationToken: CancellationToken(),
+                progress: { _, _ in }
+            )
+            let items = try ArchiveOperationBridge.list(
+                ArchiveXPCRequest(operation: .list, archivePath: destinationURL.path, password: password)
+            )
+            print("recovered=\(summary.recoveredFiles)")
+            print("skipped=\(summary.skippedEntries)")
+            print("items=\(items.count)")
+            print("output=\(summary.outputURL.path)")
+            exit(0)
+        } catch {
+            fail(error)
+        }
+    }
+
+    private static func runXPCTest(arguments: [String]) -> Never {
+        guard arguments.count >= 3 else { usage() }
+        let archiveURL = URL(fileURLWithPath: arguments[2])
+        do {
+            let listResponse = try ArchiveXPCClient.shared.perform(
+                ArchiveXPCRequest(operation: .list, archivePath: archiveURL.path)
+            )
+            let items = listResponse.items ?? []
+            print("items=\(items.count)")
+            if arguments.count >= 4 {
+                let destination = URL(fileURLWithPath: arguments[3])
+                let extractResponse = try ArchiveXPCClient.shared.perform(
+                    ArchiveXPCRequest(
+                        operation: .extract,
+                        archivePath: archiveURL.path,
+                        destinationPath: destination.path
+                    )
+                )
+                print("extracted=\(extractResponse.extractedFiles ?? 0)")
+            }
+            exit(0)
+        } catch {
+            fail(error)
+        }
+    }
+
+    private static func runKeychainTest() -> Never {
+        let archiveURL = URL(fileURLWithPath: "/tmp/nanzip-keychain-test-\(UUID().uuidString).zip")
+        let password = "nanzip-keychain-\(UUID().uuidString)"
+        do {
+            try PasswordStore.save(password: password, for: archiveURL)
+            guard PasswordStore.password(for: archiveURL) == password else {
+                throw ArchiveError.fileSystem("Keychain 密码读回不一致。")
+            }
+            guard PasswordStore.allArchiveAccounts().contains(PasswordStore.accountKey(for: archiveURL)) else {
+                throw ArchiveError.fileSystem("Keychain 列表中没有测试账户。")
+            }
+            try PasswordStore.deletePassword(for: archiveURL)
+            guard PasswordStore.password(for: archiveURL) == nil else {
+                throw ArchiveError.fileSystem("Keychain 测试账户未删除。")
+            }
+            print("keychain=PASS")
             exit(0)
         } catch {
             fail(error)
@@ -137,10 +293,14 @@ enum NanZipSelfTest {
     private static func usage() -> Never {
         FileHandle.standardError.write(Data("""
         Usage:
-          NanZip --self-test <archive> <destination> [password]
+          NanZip --self-test <archive> <destination> [password|-] [encoding] [overwrite]
           NanZip --compress-test <format> <output> <level> <password|-> <input>...
+          NanZip --volume-test <format> <output> <level> <password|-> <volume-mb> <input>...
           NanZip --replace-test <archive> <archive-path> <source> <password|->
           NanZip --delete-test <archive> <archive-path> <password|->
+          NanZip --repair-test <archive.zip> <new-output.zip> <password|->
+          NanZip --xpc-test <archive> [destination]
+          NanZip --keychain-test
         Formats: zip, sevenZip, tar, tarGz, tarBz2, tarXz
         """.utf8))
         exit(2)

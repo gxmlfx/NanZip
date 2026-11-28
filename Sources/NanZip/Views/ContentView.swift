@@ -1,4 +1,5 @@
 import NanZipCore
+import QuickLookUI
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -21,6 +22,8 @@ struct ContentView: View {
                     }
                 case .compress:
                     CompressionWorkspaceView(model: model)
+                case .batch:
+                    BatchWorkspaceView(model: model)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -66,12 +69,16 @@ struct ContentView: View {
                 NanZipGlassButton {
                     if model.mode == .extract {
                         model.presentOpenPanel()
-                    } else {
+                    } else if model.mode == .compress {
                         model.presentCompressionInputPanel()
+                    } else {
+                        model.presentBatchInputPanel()
                     }
                 } label: {
                     Label(
-                        model.mode == .extract ? "打开压缩包" : "添加文件",
+                        model.mode == .extract
+                            ? "打开压缩包"
+                            : (model.mode == .compress ? "添加文件" : "添加任务"),
                         systemImage: model.mode == .extract ? "archivebox" : "plus"
                     )
                 }
@@ -91,13 +98,20 @@ struct ContentView: View {
                         Label("解压全部", systemImage: "arrow.down.doc")
                     }
                     .disabled(!model.canExtract)
-                } else {
+                } else if model.mode == .compress {
                     Button {
                         model.startCompression()
                     } label: {
                         Label("开始压缩", systemImage: "archivebox")
                     }
                     .disabled(!model.canCompress)
+                } else {
+                    Button {
+                        model.startBatch()
+                    } label: {
+                        Label("开始批量处理", systemImage: "play.fill")
+                    }
+                    .disabled(!model.canRunBatch)
                 }
             }
         }
@@ -146,9 +160,13 @@ private struct WorkspaceHeaderView: View {
                 .labelsHidden()
                 .frame(width: 230)
 
-                Text(model.mode == .extract
-                     ? "归档浏览 · 选择性解压 · 内容编辑 · 完整性测试"
-                     : "新建压缩包 · AES 加密 · 多线程 7-Zip 引擎")
+                Text(
+                    model.mode == .extract
+                        ? "归档浏览 · 智能解压 · 预览 · 修复"
+                        : (model.mode == .compress
+                            ? "新建压缩包 · 分卷 · AES 加密 · 多线程 7-Zip"
+                            : "批量压缩/解压 · 高级覆盖规则 · 独立 XPC 服务")
+                )
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -181,15 +199,24 @@ private struct ArchiveWorkspaceView: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
 
-            HSplitView {
-                ArchiveSidebarView(model: model)
-                    .frame(minWidth: 170, idealWidth: 205, maxWidth: 280)
+            HStack(spacing: 0) {
+                HSplitView {
+                    ArchiveSidebarView(model: model)
+                        .frame(minWidth: 170, idealWidth: 205, maxWidth: 280)
 
-                VStack(spacing: 0) {
-                    ArchivePathBar(model: model)
-                    ArchiveTableView(model: model)
+                    VStack(spacing: 0) {
+                        ArchivePathBar(model: model)
+                        ArchiveTableView(model: model)
+                    }
+                    .frame(minWidth: 560)
                 }
-                .frame(minWidth: 620)
+
+                if model.previewItem != nil {
+                    Divider()
+                    ArchivePreviewInspector(model: model)
+                        .frame(minWidth: 280, idealWidth: 330, maxWidth: 420)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
             }
 
             ExtractionOptionsView(model: model)
@@ -234,6 +261,38 @@ private struct ArchiveActionBar: View {
                     model.testCurrentArchive()
                 }
                 .disabled(!model.canTestArchive)
+
+                Menu {
+                    Button("智能解压") { model.extractSmart() }
+                        .disabled(!model.canExtract)
+                    Button("解压到当前目录") { model.extractHere() }
+                        .disabled(!model.canExtract)
+                    Button("解压到指定文件夹…") { model.extractToChosenFolder() }
+                        .disabled(!model.canExtract)
+                    Divider()
+                    Button("预览所选文件") {
+                        if let item = model.selectedItems.first { model.beginPreview(item) }
+                    }
+                    .disabled(!model.canPreviewSelected)
+                    Button("浏览嵌套归档") { model.openNestedArchive() }
+                        .disabled(!model.canOpenNestedArchive)
+                    Divider()
+                    Button("修复 ZIP 副本…") { model.presentRepairPanel() }
+                        .disabled(model.archiveURL?.pathExtension.lowercased() != "zip" || model.isBusy)
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: "ellipsis.circle")
+                            .font(.system(size: 21, weight: .medium))
+                            .frame(height: 24)
+                        Text("更多")
+                            .font(.caption)
+                    }
+                    .frame(width: 62, height: 54)
+                    .contentShape(Rectangle())
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .frame(width: 62, height: 54)
 
                 Spacer()
             }
@@ -305,6 +364,9 @@ private struct ArchivePathBar: View {
     @ObservedObject var model: AppModel
 
     private var breadcrumb: String {
+        if let nested = model.currentNestedBreadcrumbTitle {
+            return "嵌套归档 / \(nested)"
+        }
         if model.selectedFolderPath.isEmpty {
             return model.archiveURL?.lastPathComponent ?? "归档"
         }
@@ -313,6 +375,14 @@ private struct ArchivePathBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
+            if model.canNavigateBack {
+                Button {
+                    model.navigateBackFromNestedArchive()
+                } label: {
+                    Label("返回", systemImage: "chevron.left")
+                }
+                .buttonStyle(.borderless)
+            }
             Image(systemName: "folder")
                 .foregroundStyle(.secondary)
             Text(breadcrumb)
@@ -332,6 +402,8 @@ private struct ArchivePathBar: View {
 
 private struct ArchiveTableView: View {
     @ObservedObject var model: AppModel
+    @State private var columnCustomization = TableColumnCustomization<ArchiveItem>()
+    @AppStorage("nanzip.archive.columnCustomization.data") private var columnCustomizationData = Data()
 
     var body: some View {
         Group {
@@ -351,12 +423,21 @@ private struct ArchiveTableView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                Table(model.filteredItems, selection: $model.selectedIDs) {
-                    TableColumn("名称") { item in
-                        Text(item.name)
-                            .lineLimit(1)
+                Table(
+                    model.filteredItems,
+                    selection: $model.selectedIDs,
+                    columnCustomization: $columnCustomization
+                ) {
+                    TableColumn("名称") { (item: ArchiveItem) in
+                        Label {
+                            Text(item.name).lineLimit(1)
+                        } icon: {
+                            Image(systemName: item.isDirectory ? "folder.fill" : fileIcon(for: item))
+                                .foregroundStyle(item.isDirectory ? .blue : .secondary)
+                        }
                     }
                     .width(min: 200, ideal: 230)
+                    .customizationID("name")
 
                     TableColumn("原始大小") { item in
                         Text(item.isDirectory ? "—" : Formatting.bytes(item.size))
@@ -364,6 +445,7 @@ private struct ArchiveTableView: View {
                             .foregroundStyle(.secondary)
                     }
                     .width(min: 65, ideal: 72)
+                    .customizationID("originalSize")
 
                     TableColumn("压缩后") { item in
                         Text(item.isDirectory ? "—" : Formatting.bytes(item.compressedSize))
@@ -371,6 +453,7 @@ private struct ArchiveTableView: View {
                             .foregroundStyle(.secondary)
                     }
                     .width(min: 65, ideal: 72)
+                    .customizationID("packedSize")
 
                     TableColumn("压缩率") { item in
                         Text(ratioText(item))
@@ -378,24 +461,56 @@ private struct ArchiveTableView: View {
                             .foregroundStyle(.secondary)
                     }
                     .width(min: 50, ideal: 55)
+                    .customizationID("ratio")
 
                     TableColumn("修改日期") { item in
                         Text(Formatting.date(item.modifiedAt))
                             .foregroundStyle(.secondary)
                     }
                     .width(min: 100, ideal: 120)
+                    .customizationID("modified")
 
                     TableColumn("方法") { item in
                         Text(item.isDirectory ? "—" : (item.method.isEmpty ? "—" : item.method))
                             .foregroundStyle(.tertiary)
                     }
                     .width(min: 55, ideal: 65)
+                    .customizationID("method")
                 }
                 .tableStyle(.inset(alternatesRowBackgrounds: true))
+                .contextMenu(forSelectionType: ArchiveItem.ID.self) { ids in
+                    if ids.count == 1,
+                       let item = model.items.first(where: { ids.contains($0.id) }) {
+                        Button("预览") { model.beginPreview(item) }
+                            .disabled(item.isDirectory)
+                        Button("打开嵌套归档") { model.openNestedArchive() }
+                            .disabled(!ArchiveService.supportedExtensions.contains(
+                                (item.name as NSString).pathExtension.lowercased()
+                            ))
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.background.opacity(0.76))
+        .onChange(of: model.selectedIDs) { _, _ in
+            model.updatePreviewForSelection()
+        }
+        .onAppear(perform: restoreColumnCustomization)
+        .onChange(of: columnCustomization) { _, customization in
+            if let data = try? JSONEncoder().encode(customization) {
+                columnCustomizationData = data
+            }
+        }
+    }
+
+    private func restoreColumnCustomization() {
+        guard !columnCustomizationData.isEmpty,
+              let customization = try? JSONDecoder().decode(
+                TableColumnCustomization<ArchiveItem>.self,
+                from: columnCustomizationData
+              ) else { return }
+        columnCustomization = customization
     }
 
     private func ratioText(_ item: ArchiveItem) -> String {
@@ -413,6 +528,91 @@ private struct ArchiveTableView: View {
         case "swift", "py", "js", "ts", "c", "h", "cpp": return "chevron.left.forwardslash.chevron.right"
         default: return "doc"
         }
+    }
+}
+
+private struct ArchivePreviewInspector: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("快速预览").font(.headline)
+                    Text(model.previewItem?.name ?? "")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer()
+                Button {
+                    model.revealPreviewFile()
+                } label: {
+                    Image(systemName: "arrow.up.forward.app")
+                }
+                .buttonStyle(.borderless)
+                .disabled(model.previewURL == nil)
+                Button {
+                    model.clearPreview()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+            }
+            .padding(12)
+            Divider()
+
+            if model.isPreviewing {
+                VStack(spacing: 10) {
+                    ProgressView().controlSize(.large)
+                    Text("仅提取当前条目…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let error = model.previewError {
+                ContentUnavailableView(
+                    "无法预览",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(error)
+                )
+            } else if let item = model.previewItem,
+                      ArchiveService.supportedExtensions.contains(
+                        (item.name as NSString).pathExtension.lowercased()
+                      ) {
+                ContentUnavailableView {
+                    Label("嵌套归档", systemImage: "archivebox")
+                } description: {
+                    Text("使用 NanZip 的内置归档浏览器打开，不交给第三方预览扩展。")
+                } actions: {
+                    Button("直接浏览") { model.openNestedArchive() }
+                }
+            } else if let previewURL = model.previewURL {
+                QuickLookPreviewView(url: previewURL)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ContentUnavailableView(
+                    "选择一个文件",
+                    systemImage: "eye",
+                    description: Text("图片、文档、PDF、音视频等将在这里显示。")
+                )
+            }
+        }
+        .background(.regularMaterial.opacity(0.78))
+    }
+}
+
+private struct QuickLookPreviewView: NSViewRepresentable {
+    let url: URL
+
+    func makeNSView(context: Context) -> QLPreviewView {
+        QLPreviewView(frame: .zero, style: .normal) ?? QLPreviewView()
+    }
+
+    func updateNSView(_ view: QLPreviewView, context: Context) {
+        view.previewItem = url as NSURL
     }
 }
 
@@ -442,6 +642,26 @@ private struct ExtractionOptionsView: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 180)
                     .onSubmit { model.reloadWithPassword() }
+                Toggle("记住密码", isOn: $model.rememberPassword)
+                    .toggleStyle(.checkbox)
+                    .font(.caption)
+                Picker("解压规则", selection: $model.extractionPolicy) {
+                    ForEach(ExtractionDestinationPolicy.allCases, id: \.self) { policy in
+                        Text(policy.title).tag(policy)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 150)
+                Picker("文件名编码", selection: $model.compressionFilenameEncoding) {
+                    ForEach(ArchiveFilenameEncoding.allCases, id: \.self) {
+                        Text($0.title).tag($0)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 160)
+                .onChange(of: model.compressionFilenameEncoding) { _, _ in
+                    model.reloadWithPassword()
+                }
                 Picker("同名文件", selection: $model.overwritePolicy) {
                     ForEach(ArchiveOverwritePolicy.allCases, id: \.self) { policy in
                         Text(policy.title).tag(policy)
@@ -632,7 +852,30 @@ private struct CompressionOptionsView: View {
                 }
                 GridRow {
                     Text("分卷")
-                    Text("不分卷（后续版本）").foregroundStyle(.secondary)
+                    HStack {
+                        Picker("分卷大小", selection: $model.compressionVolumeChoice) {
+                            ForEach(CompressionVolumeChoice.allCases) { choice in
+                                Text(choice.title).tag(choice)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 150)
+                        Text("生成 .001、.002… 分卷")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                GridRow {
+                    Text("文件名编码")
+                    Picker("文件名编码", selection: $model.compressionFilenameEncoding) {
+                        ForEach(ArchiveFilenameEncoding.allCases, id: \.self) { encoding in
+                            Text(encoding.title).tag(encoding)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 220)
                 }
                 GridRow {
                     Text("完整性")
@@ -662,6 +905,168 @@ private struct CompressionOptionsView: View {
         }
         .padding(12)
         .nanZipGlassCard(cornerRadius: 14)
+    }
+}
+
+private struct BatchWorkspaceView: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("批量任务").font(.title2.weight(.semibold))
+                    Text("按顺序调用独立 XPC 服务，单项失败不会中断队列")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Picker("批量模式", selection: $model.batchMode) {
+                    ForEach(BatchOperationMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 240)
+                .onChange(of: model.batchMode) { _, _ in
+                    model.clearBatchQueue()
+                }
+            }
+
+            HStack(spacing: 14) {
+                Label(
+                    model.batchOutputDirectory?.path ?? "输出到各文件所在目录",
+                    systemImage: "folder"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                Button("选择输出目录…") { model.presentBatchOutputPanel() }
+
+                if model.batchMode == .extract {
+                    Picker("解压规则", selection: $model.extractionPolicy) {
+                        ForEach(ExtractionDestinationPolicy.allCases, id: \.self) {
+                            Text($0.title).tag($0)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 170)
+                } else {
+                    Picker("格式", selection: $model.compressionFormat) {
+                        ForEach(CompressionFormat.allCases, id: \.self) {
+                            Text($0.title).tag($0)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 140)
+                    Picker("分卷", selection: $model.compressionVolumeChoice) {
+                        ForEach(CompressionVolumeChoice.allCases) {
+                            Text($0.title).tag($0)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 130)
+                }
+                Picker("同名文件", selection: $model.overwritePolicy) {
+                    ForEach(ArchiveOverwritePolicy.allCases, id: \.self) {
+                        Text($0.title).tag($0)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 170)
+                Spacer()
+                Button("添加任务…") { model.presentBatchInputPanel() }
+            }
+
+            VStack(spacing: 0) {
+                HStack {
+                    Text("任务队列").font(.headline)
+                    Spacer()
+                    Text("\(model.batchItems.count) 项")
+                        .foregroundStyle(.secondary)
+                    Button("清空") { model.clearBatchQueue() }
+                        .disabled(model.batchItems.isEmpty || model.isBatchRunning)
+                }
+                .padding(10)
+                Divider()
+
+                if model.batchItems.isEmpty {
+                    ContentUnavailableView(
+                        model.batchMode == .extract ? "添加多个压缩包" : "添加多个文件或文件夹",
+                        systemImage: "square.stack.3d.up",
+                        description: Text("每个任务会生成独立结果，并逐项显示成功或失败原因。")
+                    )
+                    .frame(maxHeight: .infinity)
+                } else {
+                    List {
+                        ForEach(model.batchItems) { item in
+                            HStack(spacing: 10) {
+                                Image(systemName: item.state.symbol)
+                                    .foregroundStyle(color(for: item.state))
+                                    .frame(width: 18)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.url.lastPathComponent).lineLimit(1)
+                                    Text(item.state.title)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                Button {
+                                    model.batchItems.removeAll { $0.id == item.id }
+                                } label: {
+                                    Image(systemName: "minus.circle.fill")
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(model.isBatchRunning)
+                            }
+                            .padding(.vertical, 3)
+                        }
+                    }
+                    .listStyle(.inset)
+                }
+            }
+            .background(.background.opacity(0.72))
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(.separator.opacity(0.32), lineWidth: 1)
+            }
+
+            HStack {
+                if model.isBatchRunning {
+                    ProgressView(value: model.batchProgress)
+                        .frame(maxWidth: 300)
+                }
+                Text(model.batchStatusMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
+                if model.isBatchRunning {
+                    Button("取消") { model.cancelCurrentOperation() }
+                }
+                NanZipProminentButton {
+                    model.startBatch()
+                } label: {
+                    Label("开始批量处理", systemImage: "play.fill")
+                }
+                .disabled(!model.canRunBatch)
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+    }
+
+    private func color(for state: BatchItemState) -> Color {
+        switch state {
+        case .waiting: return .secondary
+        case .running: return .blue
+        case .success: return .green
+        case .failed: return .red
+        }
     }
 }
 

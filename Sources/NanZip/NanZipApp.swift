@@ -4,7 +4,10 @@ import SwiftUI
 enum NanZipMain {
     static func main() {
         let firstArgument = CommandLine.arguments.dropFirst().first
-        if firstArgument == "--self-test" || firstArgument == "--compress-test" || firstArgument == "--replace-test" || firstArgument == "--delete-test" {
+        if firstArgument == "--self-test" || firstArgument == "--compress-test" ||
+            firstArgument == "--volume-test" || firstArgument == "--replace-test" ||
+            firstArgument == "--delete-test" || firstArgument == "--repair-test" ||
+            firstArgument == "--xpc-test" || firstArgument == "--keychain-test" {
             NanZipSelfTest.run()
         }
         NanZipApp.main()
@@ -12,6 +15,7 @@ enum NanZipMain {
 }
 
 struct NanZipApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
 
     var body: some Scene {
@@ -37,7 +41,7 @@ struct NanZipApp: App {
         }
 
         Settings {
-            SettingsView()
+            SettingsView(model: model)
                 .frame(width: 520, height: 360)
         }
     }

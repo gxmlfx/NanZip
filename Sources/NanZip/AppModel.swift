@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 enum WorkspaceMode: String, CaseIterable, Identifiable {
     case extract
     case compress
+    case batch
 
     var id: String { rawValue }
 
@@ -14,6 +15,7 @@ enum WorkspaceMode: String, CaseIterable, Identifiable {
         switch self {
         case .extract: return "解压"
         case .compress: return "压缩"
+        case .batch: return "批量"
         }
     }
 
@@ -21,6 +23,7 @@ enum WorkspaceMode: String, CaseIterable, Identifiable {
         switch self {
         case .extract: return "arrow.down.doc"
         case .compress: return "arrow.up.doc"
+        case .batch: return "square.stack.3d.up"
         }
     }
 }
@@ -50,16 +53,56 @@ final class AppModel: ObservableObject {
     @Published var compressionFormat: CompressionFormat = .zip
     @Published var compressionLevel: CompressionLevel = .balanced
     @Published var compressionPassword = ""
+    @Published var compressionVolumeChoice: CompressionVolumeChoice = .none
+    @Published var compressionFilenameEncoding: ArchiveFilenameEncoding = .automatic
     @Published var compressionDestinationURL: URL?
     @Published var isCompressing = false
     @Published var compressionProgress: Double = 0
     @Published var compressionCurrentPath = ""
     @Published var compressionStatusMessage = "选择文件或文件夹后开始压缩"
 
+    @Published var extractionPolicy: ExtractionDestinationPolicy = .smart
+    @Published var rememberPassword = false
+    @Published var previewURL: URL?
+    @Published var previewItem: ArchiveItem?
+    @Published var isPreviewing = false
+    @Published var previewError: String?
+    @Published var archiveBreadcrumbs: [ArchiveBreadcrumb] = []
+
+    @Published var batchMode: BatchOperationMode = .extract
+    @Published var batchItems: [BatchQueueItem] = []
+    @Published var batchOutputDirectory: URL?
+    @Published var isBatchRunning = false
+    @Published var batchProgress: Double = 0
+    @Published var batchStatusMessage = "添加压缩包或文件后开始批量处理"
+
     private var loadTask: Task<Void, Never>?
     private var extractionTask: Task<Void, Never>?
     private var compressionTask: Task<Void, Never>?
     private var cancellationToken: CancellationToken?
+    private var activeXPCOperationID: String?
+    private var previewWorkingDirectory: URL?
+    private var quickActionObserver: NSObjectProtocol?
+    private var pendingQuickExtractionPolicy: ExtractionDestinationPolicy?
+
+    init() {
+        quickActionObserver = NotificationCenter.default.addObserver(
+            forName: .nanZipQuickAction,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let payload = notification.object as? NanZipQuickActionPayload else { return }
+            Task { @MainActor in
+                self?.handleQuickAction(payload)
+            }
+        }
+    }
+
+    deinit {
+        if let quickActionObserver {
+            NotificationCenter.default.removeObserver(quickActionObserver)
+        }
+    }
 
     var filteredItems: [ArchiveItem] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -151,16 +194,40 @@ final class AppModel: ObservableObject {
         canExtract && selectedFileCount > 0
     }
 
+    var canPreviewSelected: Bool {
+        selectedItems.count == 1 && selectedItems[0].isDirectory == false && !isBusy
+    }
+
+    var canOpenNestedArchive: Bool {
+        guard selectedItems.count == 1, let item = selectedItems.first, !item.isDirectory else {
+            return false
+        }
+        let ext = (item.name as NSString).pathExtension.lowercased()
+        return ArchiveService.supportedExtensions.contains(ext)
+    }
+
+    var canNavigateBack: Bool {
+        archiveBreadcrumbs.count > 1 && !isBusy
+    }
+
+    var currentNestedBreadcrumbTitle: String? {
+        archiveBreadcrumbs.last?.nestedEntryPath
+    }
+
     var selectionLabel: String {
         selectedFileCount > 0 ? "解压所选（\(selectedFileCount)）" : "解压所选"
     }
 
     var isBusy: Bool {
-        isLoading || isExtracting || isCompressing || isEditingArchive
+        isLoading || isExtracting || isCompressing || isEditingArchive || isBatchRunning
     }
 
     var canCompress: Bool {
         !compressionInputs.isEmpty && !isBusy
+    }
+
+    var canRunBatch: Bool {
+        !batchItems.isEmpty && !isBusy && !isBatchRunning
     }
 
     var compressionInputCount: Int {
@@ -181,8 +248,12 @@ final class AppModel: ObservableObject {
         mode = newMode
         if newMode == .compress {
             statusMessage = compressionStatusMessage
+        } else if newMode == .batch {
+            statusMessage = batchStatusMessage
         } else if archiveURL == nil {
             statusMessage = "拖入压缩包或点击“打开压缩包”"
+        } else if !items.isEmpty {
+            statusMessage = "已读取 \(fileCount) 个文件 · \(ArchiveOperationBridge.hasEmbeddedXPCService ? "XPC" : "本机引擎")"
         }
     }
 
@@ -269,7 +340,20 @@ final class AppModel: ObservableObject {
     }
 
     func openArchive(_ url: URL) {
+        cleanupBreadcrumbTemporaryDirectories(after: 0)
+        archiveBreadcrumbs = [
+            ArchiveBreadcrumb(
+                archiveURL: url,
+                nestedEntryPath: nil,
+                temporaryDirectory: nil
+            )
+        ]
+        loadArchive(url)
+    }
+
+    private func loadArchive(_ url: URL) {
         loadTask?.cancel()
+        clearPreview()
         mode = .extract
         archiveURL = url
         items = []
@@ -282,22 +366,50 @@ final class AppModel: ObservableObject {
         isLoading = true
         statusMessage = "正在读取归档目录…"
 
+        if password.isEmpty, let savedPassword = PasswordStore.password(for: url) {
+            password = savedPassword
+            rememberPassword = true
+        }
         let passphrase = password.isEmpty ? nil : password
-        loadTask = Task {
+        let operationID = UUID().uuidString
+        activeXPCOperationID = operationID
+        let request = ArchiveXPCRequest(
+            operationID: operationID,
+            operation: .list,
+            archivePath: url.path,
+            password: passphrase,
+            filenameEncoding: compressionFilenameEncoding
+        )
+        loadTask = Task { [weak self] in
+            guard let self else { return }
             do {
                 let loadedItems = try await Task.detached(priority: .userInitiated) {
-                    try ArchiveService.listArchive(at: url, password: passphrase)
+                    try ArchiveOperationBridge.list(request)
                 }.value
 
                 if Task.isCancelled { return }
                 items = loadedItems
                 isLoading = false
+                activeXPCOperationID = nil
                 statusMessage = loadedItems.isEmpty
                     ? "压缩包中没有可显示的文件"
-                    : "已读取 \(fileCount) 个文件"
+                    : "已读取 \(fileCount) 个文件 · \(ArchiveOperationBridge.hasEmbeddedXPCService ? "XPC" : "本机引擎")"
+                if let quickPolicy = pendingQuickExtractionPolicy {
+                    pendingQuickExtractionPolicy = nil
+                    extractionPolicy = quickPolicy
+                    DispatchQueue.main.async { [weak self] in
+                        self?.startExtraction(
+                            selectedPaths: nil,
+                            totalBytes: self?.totalUncompressedSize ?? 0,
+                            label: "全部文件"
+                        )
+                    }
+                }
             } catch {
                 if Task.isCancelled { return }
                 isLoading = false
+                activeXPCOperationID = nil
+                pendingQuickExtractionPolicy = nil
                 items = []
                 handle(error)
             }
@@ -306,7 +418,71 @@ final class AppModel: ObservableObject {
 
     func reloadWithPassword() {
         guard let archiveURL else { return }
-        openArchive(archiveURL)
+        loadArchive(archiveURL)
+    }
+
+    func openNestedArchive() {
+        guard let archiveURL,
+              selectedItems.count == 1,
+              let item = selectedItems.first,
+              !item.isDirectory else { return }
+        let work = FileManager.default.temporaryDirectory
+            .appendingPathComponent("nanzip-nested-\(UUID().uuidString)", isDirectory: true)
+        let operationID = UUID().uuidString
+        activeXPCOperationID = operationID
+        let request = ArchiveXPCRequest(
+            operationID: operationID,
+            operation: .preview,
+            archivePath: archiveURL.path,
+            destinationPath: work.path,
+            entryPath: item.path,
+            password: password.isEmpty ? nil : password,
+            filenameEncoding: compressionFilenameEncoding
+        )
+        isEditingArchive = true
+        statusMessage = "正在打开嵌套归档…"
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try ArchiveOperationBridge.preview(request, cancellationToken: CancellationToken())
+                }.value
+                isEditingArchive = false
+                activeXPCOperationID = nil
+                archiveBreadcrumbs.append(
+                    ArchiveBreadcrumb(
+                        archiveURL: result.extractedURL,
+                        nestedEntryPath: item.path,
+                        temporaryDirectory: result.workingDirectoryURL
+                    )
+                )
+                loadArchive(result.extractedURL)
+            } catch {
+                isEditingArchive = false
+                activeXPCOperationID = nil
+                try? FileManager.default.removeItem(at: work)
+                handle(error)
+            }
+        }
+    }
+
+    func navigateBackFromNestedArchive() {
+        guard archiveBreadcrumbs.count > 1 else { return }
+        let removed = archiveBreadcrumbs.removeLast()
+        if let directory = removed.temporaryDirectory {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        guard let parent = archiveBreadcrumbs.last else { return }
+        loadArchive(parent.archiveURL)
+    }
+
+    private func cleanupBreadcrumbTemporaryDirectories(after index: Int) {
+        guard archiveBreadcrumbs.count > index else { return }
+        for breadcrumb in archiveBreadcrumbs.dropFirst(index + 1) {
+            if let directory = breadcrumb.temporaryDirectory {
+                try? FileManager.default.removeItem(at: directory)
+            }
+        }
     }
 
     func extractAll() {
@@ -326,6 +502,89 @@ final class AppModel: ObservableObject {
         )
     }
 
+    func extractSmart() {
+        extractionPolicy = .smart
+        extractAll()
+    }
+
+    func extractHere() {
+        extractionPolicy = .here
+        extractAll()
+    }
+
+    func extractToChosenFolder() {
+        presentDestinationPanel()
+        guard destinationURL != nil else { return }
+        extractionPolicy = .custom
+        if selectedFileCount > 0 {
+            extractSelected()
+        } else {
+            extractAll()
+        }
+    }
+
+    func updatePreviewForSelection() {
+        guard selectedItems.count == 1,
+              let item = selectedItems.first,
+              !item.isDirectory else {
+            clearPreview()
+            return
+        }
+        beginPreview(item)
+    }
+
+    func beginPreview(_ item: ArchiveItem) {
+        guard let archiveURL else { return }
+        clearPreview()
+        previewItem = item
+        isPreviewing = true
+        previewError = nil
+        let work = FileManager.default.temporaryDirectory
+            .appendingPathComponent("nanzip-preview-ui-\(UUID().uuidString)", isDirectory: true)
+        let request = ArchiveXPCRequest(
+            operation: .preview,
+            archivePath: archiveURL.path,
+            destinationPath: work.path,
+            entryPath: item.path,
+            password: password.isEmpty ? nil : password,
+            filenameEncoding: compressionFilenameEncoding
+        )
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try ArchiveOperationBridge.preview(request, cancellationToken: CancellationToken())
+                }.value
+                guard self.previewItem?.id == item.id else {
+                    try? FileManager.default.removeItem(at: result.workingDirectoryURL)
+                    return
+                }
+                previewWorkingDirectory = result.workingDirectoryURL
+                previewURL = result.extractedURL
+                isPreviewing = false
+            } catch {
+                isPreviewing = false
+                previewError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        }
+    }
+
+    func clearPreview() {
+        previewURL = nil
+        previewItem = nil
+        isPreviewing = false
+        previewError = nil
+        if let previewWorkingDirectory {
+            try? FileManager.default.removeItem(at: previewWorkingDirectory)
+        }
+        previewWorkingDirectory = nil
+    }
+
+    func revealPreviewFile() {
+        guard let previewURL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([previewURL])
+    }
+
     func presentAddFilesPanel() {
         guard let archiveURL else { return }
         let panel = NSOpenPanel()
@@ -336,12 +595,22 @@ final class AppModel: ObservableObject {
         panel.allowsMultipleSelection = true
         guard panel.runModal() == .OK else { return }
         let files = panel.urls
-        beginArchiveEdit(operationName: "正在添加文件…") { [password, archiveURL] token in
-            try ArchiveEditingService.addFiles(
-                to: archiveURL,
-                fileURLs: files,
-                password: password.isEmpty ? nil : password,
-                cancellationToken: token
+        let operationID = UUID().uuidString
+        let request = ArchiveXPCRequest(
+            operationID: operationID,
+            operation: .add,
+            archivePath: archiveURL.path,
+            inputPaths: files.map(\.path),
+            password: password.isEmpty ? nil : password
+        )
+        beginArchiveEdit(
+            operationName: "正在添加文件…",
+            operationID: operationID
+        ) { token in
+            let changed = try ArchiveOperationBridge.edit(request, cancellationToken: token)
+            return ArchiveEditSummary(
+                changedEntries: changed,
+                archiveURL: archiveURL
             )
         }
     }
@@ -360,12 +629,24 @@ final class AppModel: ObservableObject {
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let sourceURL = panel.url else { return }
 
-        beginArchiveEdit(operationName: "正在替换归档内容…") { [password, archiveURL] token in
-            try ArchiveEditingService.replaceEntries(
-                in: archiveURL,
-                replacements: [ArchiveReplacement(archivePath: item.path, sourceURL: sourceURL)],
-                password: password.isEmpty ? nil : password,
-                cancellationToken: token
+        let operationID = UUID().uuidString
+        let request = ArchiveXPCRequest(
+            operationID: operationID,
+            operation: .replace,
+            archivePath: archiveURL.path,
+            password: password.isEmpty ? nil : password,
+            replacements: [
+                ArchiveXPCReplacement(archivePath: item.path, sourcePath: sourceURL.path)
+            ]
+        )
+        beginArchiveEdit(
+            operationName: "正在替换归档内容…",
+            operationID: operationID
+        ) { token in
+            let changed = try ArchiveOperationBridge.edit(request, cancellationToken: token)
+            return ArchiveEditSummary(
+                changedEntries: changed,
+                archiveURL: archiveURL
             )
         }
     }
@@ -381,22 +662,113 @@ final class AppModel: ObservableObject {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         let paths = selectedEntryPaths
-        beginArchiveEdit(operationName: "正在删除归档内容…") { [password, archiveURL] token in
-            try ArchiveEditingService.deleteEntries(
-                from: archiveURL,
-                paths: paths,
-                password: password.isEmpty ? nil : password,
-                cancellationToken: token
+        let operationID = UUID().uuidString
+        let request = ArchiveXPCRequest(
+            operationID: operationID,
+            operation: .delete,
+            archivePath: archiveURL.path,
+            selectedPaths: paths,
+            password: password.isEmpty ? nil : password
+        )
+        beginArchiveEdit(
+            operationName: "正在删除归档内容…",
+            operationID: operationID
+        ) { token in
+            let changed = try ArchiveOperationBridge.edit(request, cancellationToken: token)
+            return ArchiveEditSummary(
+                changedEntries: changed,
+                archiveURL: archiveURL
             )
         }
     }
 
     func testCurrentArchive() {
         guard let archiveURL else { return }
-        beginArchiveEdit(operationName: "正在测试压缩包完整性…") { [password, archiveURL] token in
-            _ = token
-            try ArchiveService.testArchive(at: archiveURL, password: password.isEmpty ? nil : password)
+        let operationID = UUID().uuidString
+        let request = ArchiveXPCRequest(
+            operationID: operationID,
+            operation: .test,
+            archivePath: archiveURL.path,
+            password: password.isEmpty ? nil : password
+        )
+        beginArchiveEdit(
+            operationName: "正在测试压缩包完整性…",
+            operationID: operationID,
+            savePasswordOnSuccess: true
+        ) { _ in
+            try ArchiveOperationBridge.test(request)
             return ArchiveEditSummary(changedEntries: 0, archiveURL: archiveURL)
+        }
+    }
+
+    func presentRepairPanel() {
+        guard let archiveURL, archiveURL.pathExtension.lowercased() == "zip" else { return }
+        let panel = NSSavePanel()
+        panel.title = "修复损坏的 ZIP"
+        panel.prompt = "创建修复副本"
+        panel.canCreateDirectories = true
+        let base = archiveURL.deletingPathExtension().lastPathComponent
+        panel.nameFieldStringValue = "\(base)-repaired.zip"
+        panel.directoryURL = archiveURL.deletingLastPathComponent()
+        if let zipType = UTType(filenameExtension: "zip") {
+            panel.allowedContentTypes = [zipType]
+        }
+        guard panel.runModal() == .OK, let output = panel.url else { return }
+        repairCurrentZIP(to: output)
+    }
+
+    private func repairCurrentZIP(to outputURL: URL) {
+        guard let archiveURL else { return }
+        let operationID = UUID().uuidString
+        let options = CompressionOptions(
+            format: .zip,
+            level: .balanced,
+            password: password.isEmpty ? nil : password,
+            filenameEncoding: compressionFilenameEncoding
+        )
+        let request = ArchiveXPCRequest(
+            operationID: operationID,
+            operation: .repair,
+            archivePath: archiveURL.path,
+            destinationPath: outputURL.path,
+            password: password.isEmpty ? nil : password,
+            compressionOptions: options
+        )
+        let token = CancellationToken()
+        cancellationToken = token
+        activeXPCOperationID = operationID
+        isEditingArchive = true
+        progress = 0.05
+        currentPath = "正在扫描可恢复的 ZIP 条目…"
+        statusMessage = "正在创建修复副本…"
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let summary = try await Task.detached(priority: .userInitiated) {
+                    try ArchiveOperationBridge.repair(
+                        request,
+                        cancellationToken: token,
+                        progress: { _, _ in }
+                    )
+                }.value
+                isEditingArchive = false
+                activeXPCOperationID = nil
+                progress = 1
+                statusMessage = "已恢复 \(summary.recoveredFiles) 个文件到 \(summary.outputURL.lastPathComponent)"
+
+                let alert = NSAlert()
+                alert.messageText = "ZIP 修复副本已创建"
+                alert.informativeText = "恢复 \(summary.recoveredFiles) 个文件，跳过 \(summary.skippedEntries) 个无法安全恢复的条目。原压缩包未被修改。"
+                alert.addButton(withTitle: "在 Finder 中显示")
+                alert.addButton(withTitle: "好")
+                if alert.runModal() == .alertFirstButtonReturn {
+                    NSWorkspace.shared.activateFileViewerSelecting([summary.outputURL])
+                }
+            } catch {
+                isEditingArchive = false
+                activeXPCOperationID = nil
+                handle(error)
+            }
         }
     }
 
@@ -411,39 +783,52 @@ final class AppModel: ObservableObject {
         let options = CompressionOptions(
             format: compressionFormat,
             level: compressionLevel,
-            password: compressionFormatSupportsEncryption ? compressionPassword : nil
+            password: compressionFormatSupportsEncryption ? compressionPassword : nil,
+            volumeSizeBytes: compressionVolumeChoice.bytes,
+            filenameEncoding: compressionFilenameEncoding
         )
         let token = CancellationToken()
         cancellationToken = token
+        let operationID = UUID().uuidString
+        activeXPCOperationID = operationID
         isCompressing = true
         compressionProgress = 0
         compressionCurrentPath = ""
         compressionStatusMessage = "正在创建 \(options.format.title) 压缩包…"
 
         let inputs = compressionInputs
+        let request = ArchiveXPCRequest(
+            operationID: operationID,
+            operation: .compress,
+            destinationPath: compressionDestinationURL.path,
+            inputPaths: inputs.map(\.path),
+            password: options.password,
+            compressionOptions: options
+        )
         compressionTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let summary = try await Task.detached(priority: .userInitiated) {
-                    try CompressionService.createArchive(
-                        inputURLs: inputs,
-                        destinationURL: compressionDestinationURL,
-                        options: options,
-                        cancellationToken: token
-                    ) { update in
-                        DispatchQueue.main.async {
-                            self.compressionProgress = update.fraction
-                            self.compressionCurrentPath = update.currentPath
+                    try ArchiveOperationBridge.compress(
+                        request,
+                        cancellationToken: token,
+                        progress: { update in
+                            DispatchQueue.main.async {
+                                self.compressionProgress = update.fraction
+                                self.compressionCurrentPath = update.currentPath
+                            }
                         }
-                    }
+                    )
                 }.value
 
                 isCompressing = false
+                activeXPCOperationID = nil
                 compressionProgress = 1
                 compressionStatusMessage = "已创建 \(summary.outputURL.lastPathComponent)"
                 statusMessage = compressionStatusMessage
             } catch {
                 isCompressing = false
+                activeXPCOperationID = nil
                 if case ArchiveError.cancelled = error {
                     compressionStatusMessage = "已取消压缩"
                     statusMessage = compressionStatusMessage
@@ -456,8 +841,162 @@ final class AppModel: ObservableObject {
 
     func cancelCurrentOperation() {
         cancellationToken?.cancel()
+        if let activeXPCOperationID {
+            ArchiveXPCClient.shared.cancel(activeXPCOperationID)
+        }
         statusMessage = "正在取消…"
         compressionStatusMessage = "正在取消…"
+    }
+
+    func presentBatchInputPanel() {
+        let panel = NSOpenPanel()
+        panel.title = batchMode == .extract ? "选择要批量解压的压缩包" : "选择要批量压缩的文件和文件夹"
+        panel.prompt = "添加"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = batchMode == .compress
+        panel.allowsMultipleSelection = true
+        if batchMode == .extract {
+            panel.allowedContentTypes = ArchiveService.supportedExtensions.compactMap {
+                UTType(filenameExtension: $0)
+            }
+        }
+        guard panel.runModal() == .OK else { return }
+        let existing = Set(batchItems.map { $0.url.standardizedFileURL.path })
+        for url in panel.urls where !existing.contains(url.standardizedFileURL.path) {
+            batchItems.append(BatchQueueItem(url: url.standardizedFileURL))
+        }
+        batchStatusMessage = "已添加 \(batchItems.count) 个项目"
+    }
+
+    func presentBatchOutputPanel() {
+        let panel = NSOpenPanel()
+        panel.title = "选择批量输出文件夹"
+        panel.prompt = "选择"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.directoryURL = batchOutputDirectory
+        guard panel.runModal() == .OK else { return }
+        batchOutputDirectory = panel.url
+    }
+
+    func clearBatchQueue() {
+        guard !isBatchRunning else { return }
+        batchItems = []
+        isBatchRunning = false
+        batchProgress = 0
+        batchStatusMessage = "添加压缩包或文件后开始批量处理"
+    }
+
+    func startBatch() {
+        guard !batchItems.isEmpty, !isBatchRunning else { return }
+        isBatchRunning = true
+        batchProgress = 0
+        batchStatusMessage = "准备批量处理…"
+        let mode = batchMode
+        let inputs = batchItems
+        let outputDirectory = batchOutputDirectory
+        let compressionOptions = CompressionOptions(
+            format: compressionFormat,
+            level: compressionLevel,
+            password: compressionFormatSupportsEncryption ? compressionPassword : nil,
+            volumeSizeBytes: compressionVolumeChoice.bytes,
+            filenameEncoding: compressionFilenameEncoding
+        )
+        let defaultOverwrite = overwritePolicy == .ask ? .keepBoth : overwritePolicy
+        let policy = extractionPolicy
+        let passphrase = password.isEmpty ? nil : password
+
+        Task { [weak self] in
+            guard let self else { return }
+            var succeeded = 0
+            var failed = 0
+            for input in inputs {
+                if cancellationToken?.isCancelled == true { break }
+                guard let index = batchItems.firstIndex(where: { $0.id == input.id }) else { continue }
+                batchItems[index].state = .running
+                batchStatusMessage = "正在处理 \(input.url.lastPathComponent)…"
+                let token = CancellationToken()
+                cancellationToken = token
+                do {
+                    if mode == .compress {
+                        let outputParent = outputDirectory ?? input.url.deletingLastPathComponent()
+                        try FileManager.default.createDirectory(at: outputParent, withIntermediateDirectories: true)
+                        let output = outputParent.appendingPathComponent(
+                            "\(input.url.lastPathComponent).\(compressionFormat.fileExtension)"
+                        )
+                        let operationID = UUID().uuidString
+                        activeXPCOperationID = operationID
+                        let request = ArchiveXPCRequest(
+                            operationID: operationID,
+                            operation: .compress,
+                            destinationPath: output.path,
+                            inputPaths: [input.url.path],
+                            password: compressionOptions.password,
+                            compressionOptions: compressionOptions
+                        )
+                        let summary = try await Task.detached(priority: .userInitiated) {
+                            try ArchiveOperationBridge.compress(
+                                request,
+                                cancellationToken: token,
+                                progress: { _ in }
+                            )
+                        }.value
+                        batchItems[index].state = .success(
+                            "已创建 \(summary.outputURL.lastPathComponent)"
+                        )
+                    } else {
+                        let operationID = UUID().uuidString
+                        activeXPCOperationID = operationID
+                        let listRequest = ArchiveXPCRequest(
+                            operationID: operationID,
+                            operation: .list,
+                            archivePath: input.url.path,
+                            password: passphrase,
+                            filenameEncoding: compressionFilenameEncoding
+                        )
+                        let listed = try await Task.detached(priority: .userInitiated) {
+                            try ArchiveOperationBridge.list(listRequest)
+                        }.value
+                        let baseDestination = outputDirectory ?? input.url.deletingLastPathComponent()
+                        let destination = ExtractionDestinationResolver.resolve(
+                            archiveURL: input.url,
+                            items: listed,
+                            policy: policy,
+                            customDestination: baseDestination
+                        )
+                        let extractID = UUID().uuidString
+                        activeXPCOperationID = extractID
+                        let extractRequest = ArchiveXPCRequest(
+                            operationID: extractID,
+                            operation: .extract,
+                            archivePath: input.url.path,
+                            destinationPath: destination.path,
+                            password: passphrase,
+                            overwritePolicy: defaultOverwrite,
+                            filenameEncoding: compressionFilenameEncoding
+                        )
+                        let summary = try await Task.detached(priority: .userInitiated) {
+                            try ArchiveOperationBridge.extract(extractRequest)
+                        }.value
+                        batchItems[index].state = .success("解压 \(summary.extractedFiles) 个文件")
+                    }
+                    succeeded += 1
+                } catch {
+                    batchItems[index].state = .failed(
+                        (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                    )
+                    failed += 1
+                }
+                activeXPCOperationID = nil
+                batchProgress = Double(succeeded + failed) / Double(max(inputs.count, 1))
+            }
+            isBatchRunning = false
+            cancellationToken = nil
+            batchProgress = succeeded + failed == inputs.count ? 1 : batchProgress
+            batchStatusMessage = "批量完成：成功 \(succeeded)，失败 \(failed)"
+            statusMessage = batchStatusMessage
+        }
     }
 
     func revealDestination() {
@@ -468,6 +1007,21 @@ final class AppModel: ObservableObject {
     func revealCompressionOutput() {
         guard let url = compressionDestinationURL else { return }
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    func setNanZipAsDefaultArchiveApplication() {
+        NSWorkspace.shared.setDefaultApplication(
+            at: Bundle.main.bundleURL,
+            toOpen: .zip
+        ) { [weak self] error in
+            DispatchQueue.main.async {
+                if let error {
+                    self?.errorMessage = "无法设置默认归档应用：\(error.localizedDescription)"
+                } else {
+                    self?.statusMessage = "已将 NanZip 设为 ZIP 默认应用；macOS 可能显示确认提示"
+                }
+            }
+        }
     }
 
     func handleDroppedURLs(_ urls: [URL]) {
@@ -489,6 +1043,24 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func handleQuickAction(_ payload: NanZipQuickActionPayload) {
+        guard let first = payload.urls.first else { return }
+        switch payload.action {
+        case .compress:
+            addCompressionInputs(payload.urls)
+        case .extractHere:
+            pendingQuickExtractionPolicy = .here
+            openArchive(first)
+        case .extractChoose:
+            pendingQuickExtractionPolicy = nil
+            destinationURL = nil
+            openArchive(first)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.presentDestinationPanel()
+            }
+        }
+    }
+
     func handleOpenURL(_ url: URL) {
         guard url.scheme?.lowercased() == "nanzip" else {
             handleDroppedURLs([url])
@@ -507,6 +1079,24 @@ final class AppModel: ObservableObject {
             if let first = paths.first {
                 openArchive(URL(fileURLWithPath: first))
             }
+        case "smart-extract":
+            if let first = paths.first {
+                pendingQuickExtractionPolicy = .smart
+                openArchive(URL(fileURLWithPath: first))
+            }
+        case "extract-here":
+            if let first = paths.first {
+                pendingQuickExtractionPolicy = .here
+                openArchive(URL(fileURLWithPath: first))
+            }
+        case "extract-choose":
+            if let first = paths.first {
+                pendingQuickExtractionPolicy = nil
+                openArchive(URL(fileURLWithPath: first))
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                    self?.presentDestinationPanel()
+                }
+            }
         case "compress":
             addCompressionInputs(paths.map { URL(fileURLWithPath: $0) })
         default:
@@ -520,11 +1110,14 @@ final class AppModel: ObservableObject {
 
     private func beginArchiveEdit(
         operationName: String,
+        operationID: String? = nil,
+        savePasswordOnSuccess: Bool = false,
         operation: @escaping @Sendable (CancellationToken) throws -> ArchiveEditSummary
     ) {
         guard let archiveURL else { return }
         let token = CancellationToken()
         cancellationToken = token
+        activeXPCOperationID = operationID
         isEditingArchive = true
         progress = 0
         currentPath = ""
@@ -537,6 +1130,10 @@ final class AppModel: ObservableObject {
                     try operation(token)
                 }.value
                 isEditingArchive = false
+                activeXPCOperationID = nil
+                if savePasswordOnSuccess, rememberPassword, !password.isEmpty {
+                    try? PasswordStore.save(password: password, for: archiveURL)
+                }
                 selectedIDs = []
                 statusMessage = summary.changedEntries > 0
                     ? "归档内容已更新（\(summary.changedEntries) 项）"
@@ -546,6 +1143,7 @@ final class AppModel: ObservableObject {
                 destinationURL = preservedDestination
             } catch {
                 isEditingArchive = false
+                activeXPCOperationID = nil
                 if case ArchiveError.cancelled = error {
                     statusMessage = "操作已取消"
                 } else if let sevenZipError = error as? SevenZipError,
@@ -564,50 +1162,73 @@ final class AppModel: ObservableObject {
         label: String
     ) {
         guard let archiveURL else { return }
-        guard let destinationURL else {
+        if extractionPolicy == .custom && destinationURL == nil {
             presentDestinationPanel()
             return
         }
+        let requestedDestination = destinationURL ?? suggestedExtractionDestination(for: archiveURL)
+        let resolvedDestination = ExtractionDestinationResolver.resolve(
+            archiveURL: archiveURL,
+            items: items,
+            policy: extractionPolicy,
+            customDestination: requestedDestination
+        )
+        destinationURL = resolvedDestination
+
+        let effectivePolicy = resolveAskPolicyIfNeeded(
+            destination: resolvedDestination,
+            selectedPaths: selectedPaths
+        )
+        guard let effectivePolicy else { return }
 
         let token = CancellationToken()
         cancellationToken = token
+        let operationID = UUID().uuidString
+        activeXPCOperationID = operationID
         isExtracting = true
-        progress = 0
-        currentPath = ""
+        progress = 0.05
+        currentPath = "正在提交到独立 XPC 归档服务…"
         statusMessage = "正在解压 \(label)…"
 
         let passphrase = password.isEmpty ? nil : password
-        let overwritePolicy = overwritePolicy
+        let request = ArchiveXPCRequest(
+            operationID: operationID,
+            operation: .extract,
+            archivePath: archiveURL.path,
+            destinationPath: resolvedDestination.path,
+            selectedPaths: selectedPaths,
+            password: passphrase,
+            overwritePolicy: effectivePolicy,
+            filenameEncoding: compressionFilenameEncoding
+        )
 
         extractionTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let summary = try await Task.detached(priority: .userInitiated) {
-                    try ArchiveService.extract(
-                        archiveURL: archiveURL,
-                        destinationURL: destinationURL,
-                        selectedPaths: selectedPaths,
-                        totalBytes: totalBytes,
-                        password: passphrase,
-                        overwritePolicy: overwritePolicy,
-                        cancellationToken: token
-                    ) { update in
-                        DispatchQueue.main.async {
-                            self.progress = update.fraction
-                            self.currentPath = update.currentPath
-                        }
-                    }
+                    try ArchiveOperationBridge.extract(request)
                 }.value
 
                 isExtracting = false
+                activeXPCOperationID = nil
                 progress = 1
                 let skipped = summary.skippedEntries > 0
                     ? "，跳过 \(summary.skippedEntries) 个特殊条目"
                     : ""
                 statusMessage = "已解压 \(summary.extractedFiles) 个文件\(skipped)"
+                if rememberPassword, let passphrase, !passphrase.isEmpty {
+                    try? PasswordStore.save(password: passphrase, for: archiveURL)
+                }
             } catch {
                 isExtracting = false
+                activeXPCOperationID = nil
                 if case ArchiveError.cancelled = error {
+                    statusMessage = "已取消解压"
+                    return
+                }
+                if let xpcError = error as? ArchiveXPCClientError,
+                   case .remote(let message) = xpcError,
+                   message.contains("取消") {
                     statusMessage = "已取消解压"
                     return
                 }
@@ -616,16 +1237,44 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func suggestedExtractionDestination(for archiveURL: URL) -> URL {
-        let parent = archiveURL.deletingLastPathComponent()
-        var name = archiveURL.lastPathComponent
-        while !name.isEmpty {
-            let ext = (name as NSString).pathExtension.lowercased()
-            guard ArchiveService.supportedExtensions.contains(ext) else { break }
-            name = (name as NSString).deletingPathExtension
+    private func resolveAskPolicyIfNeeded(
+        destination: URL,
+        selectedPaths: Set<String>?
+    ) -> ArchiveOverwritePolicy? {
+        guard overwritePolicy == .ask else { return overwritePolicy }
+        let candidates: [ArchiveItem]
+        if let selectedPaths {
+            candidates = items.filter { selectedPaths.contains($0.path) && !$0.isDirectory }
+        } else {
+            candidates = items.filter { !$0.isDirectory }
         }
-        if name.isEmpty { name = "解压结果" }
-        return parent.appendingPathComponent(name, isDirectory: true)
+        let hasConflict = candidates.contains { item in
+            FileManager.default.fileExists(
+                atPath: destination.appendingPathComponent(item.path).path
+            )
+        }
+        guard hasConflict else { return .overwrite }
+
+        let alert = NSAlert()
+        alert.messageText = "目标位置已有同名文件"
+        alert.informativeText = "请选择本次解压的覆盖规则。"
+        alert.addButton(withTitle: "覆盖")
+        alert.addButton(withTitle: "跳过")
+        alert.addButton(withTitle: "保留两者")
+        alert.addButton(withTitle: "取消")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return .overwrite
+        case .alertSecondButtonReturn: return .skip
+        case .alertThirdButtonReturn: return .keepBoth
+        default: return nil
+        }
+    }
+
+    private func suggestedExtractionDestination(for archiveURL: URL) -> URL {
+        archiveURL.deletingLastPathComponent().appendingPathComponent(
+            ExtractionDestinationResolver.archiveBaseName(for: archiveURL),
+            isDirectory: true
+        )
     }
 
     private func suggestedArchiveName() -> String {

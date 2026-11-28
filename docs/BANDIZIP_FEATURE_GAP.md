@@ -4,89 +4,84 @@ Updated: 2026-11-28
 
 This checklist compares NanZip with publicly documented Bandizip capabilities. It is a development plan, not a claim of feature parity.
 
-## Implemented in NanZip now
+## Implemented in NanZip 0.4
 
 - [x] Native macOS archive browser.
 - [x] Left archive tree and central file table.
 - [x] Original size, packed size, compression ratio, modified date and method columns.
+- [x] Native column width, order and visibility customization with session persistence.
 - [x] Search inside archive.
 - [x] Extract all or selected files.
-- [x] Password-protected extraction.
-- [x] Progress and cancellation.
+- [x] Password-protected extraction and Keychain password manager.
+- [x] Progress and cancellation, including XPC operation cancellation.
 - [x] Create ZIP, 7Z, TAR, TAR.GZ, TAR.BZ2 and TAR.XZ.
 - [x] ZIP/7Z password creation through 7-Zip AES support.
+- [x] Split/multi-volume creation. ZIP, 7Z and TAR.GZ first-volume extraction are regression-tested.
+- [x] ZIP filename decoding and post-extraction renaming for Auto, UTF-8, CP437, CP936 and CP932.
+- [x] Smart Extract, Extract Here, archive-named folder and custom-folder rules.
+- [x] Overwrite, skip, keep-both, newer-only and ask-before-extract rules.
 - [x] Add files to an existing archive.
 - [x] Replace one archive entry with a local file.
 - [x] Delete selected archive entries.
 - [x] Test archive integrity.
-- [x] Finder right-click submenu: Compress/Extract.
+- [x] Image, text, document, PDF and audio/video preview through an on-demand single-entry extraction.
+- [x] Direct nested-archive browsing with breadcrumb/back navigation.
+- [x] Batch compression/extraction queue with per-item status.
+- [x] Finder Sync submenu with smart/here/choose-folder extraction.
+- [x] Finder Quick Actions/Services in addition to Finder Sync.
+- [x] ZIP default-application setting helper.
 - [x] Quick Look archive contents listing.
 - [x] Bundled open-source 7-Zip 26.06 engine.
+- [x] Main-app App Sandbox and independent code-signed XPC archive service.
 - [x] macOS 26/27 Liquid Glass and macOS 14+ fallback.
 - [x] Path traversal preflight checks.
+- [x] Safe ZIP repair copy for unencrypted Store/Deflate entries.
 
-## P0 — expected archive-manager basics
+## Remaining archive-manager basics
 
-- [ ] Smart extraction destination rules.
-- [ ] “Extract here”, “Extract to folder” and “Extract to another folder” as distinct Finder actions.
-- [ ] Split/multi-volume archive creation and extraction.
-- [ ] Filename encoding/code-page selection and recovery.
-- [ ] Column visibility, width and order customization.
 - [ ] Drag selected entries from an archive to Finder.
 - [ ] Copy archive entry paths and metadata.
-- [ ] More advanced overwrite rules: ask, newer-only, rename, skip.
 - [ ] Recent extraction destinations and recent archives.
-- [ ] Batch extraction for multiple archives.
-
-## P1 — archive editing and preview depth
-
+- [ ] Rename entries without extraction.
 - [ ] Multi-file replacement in one transaction.
-- [ ] Rename entries without extracting them.
 - [ ] Edit an archive entry in an external app and save it back.
-- [ ] Add/replace/delete support audit for every writable format.
-- [ ] Image thumbnails inside archive.
-- [ ] Document and audio preview inside archive.
-- [ ] Nested archive browsing without manually extracting to Finder.
-- [ ] Open selected archive entry with Quick Look.
-- [ ] Archive comments and metadata inspection.
-- [ ] Integrity test report with per-entry failures.
+- [ ] Open a selected non-previewable entry directly with its default app.
+- [ ] Per-entry integrity report rather than pass/fail summary.
 
-## P1 — password and repair workflows
+## Remaining password and repair work
 
-- [ ] Password manager backed by Keychain.
-- [ ] Recent passwords scoped by archive.
-- [ ] Repair command UI for ZIP/7Z where the engine supports recovery.
+- [ ] Recent-password UI scoped by volume/user account.
+- [ ] Generic 7Z/RAR repair or salvage workflow.
+- [ ] Encrypted ZIP salvage when the central directory is destroyed.
 - [ ] Password recovery is intentionally deferred because of security, legal and abuse risk.
 
-## P2 — advanced compression controls
+## Remaining compression controls
 
 - [ ] Compression method selection per format.
 - [ ] Dictionary size, word size and solid-block options for 7Z.
 - [ ] CPU thread count control.
 - [ ] Store/deflate selection for ZIP.
-- [ ] ZIPX and additional exotic formats where the engine supports them.
-- [ ] Create split archives by configurable size.
-- [ ] “Delete source files after archiving” option.
-- [ ] “Create one archive per file/folder” option.
-- [ ] Compression benchmark and saved presets.
+- [ ] ZIPX and additional formats where the engine supports them.
+- [ ] Delete source files after archiving.
+- [ ] Saved compression presets and exclusion rules.
+- [ ] Compression benchmark and import/export of presets.
 
-## P2 — macOS integration and product quality
+## Remaining macOS/product work
 
-- [ ] Finder Quick Actions/Services in addition to Finder Sync.
-- [ ] “Set NanZip as default archive app” helper.
-- [ ] App Sandbox/XPC isolation for archive operations.
+- [ ] Fully sandboxed XPC service with security-scoped file-access handoff.
 - [ ] Developer ID signing, notarization and hardened distribution.
 - [ ] Sparkle signed auto-update.
 - [ ] Full localization.
 - [ ] VoiceOver, Full Keyboard Access and high-contrast QA.
 - [ ] Malware scan integration.
-- [ ] Archive association management.
+- [ ] Per-extension archive association management UI.
 - [ ] Crash recovery and safe-edit journal.
+- [ ] RAR/RAR5 committed fixture regression set.
 
-## Known limitations after the 7-Zip migration
+## Known limitations
 
-- The engine is invoked as a bundled command-line process. It is faster and format-capable, but operations are not yet isolated in XPC.
-- Archive edits are atomic via a working copy but encrypted-header edge cases still need broader fixture coverage.
-- RAR/RAR5 read support exists in 7-Zip, but NanZip does not yet have a committed RAR regression fixture set.
-- TAR.GZ/BZ2/XZ extraction is recursively handled by NanZip, but creation uses a two-stage TAR plus compression flow.
-- Quick Look may compete with another installed archive preview extension. macOS selects the registered preview extension; NanZip's extension itself has been loaded and verified.
+- The XPC service is out-of-process and independently signed, but itself remains unsandboxed for direct path access in this Developer ID-oriented build.
+- Archive edits are atomic via a working copy, but encrypted-header edge cases still need broader fixture coverage.
+- ZIP legacy-name remapping is tested for CP437 and GBK; CP932 is wired through the same decoder but needs a committed fixture.
+- TAR.GZ split extraction is tested; TAR.BZ2/TAR.XZ split extraction follows the same path but needs dedicated regression fixtures.
+- Quick Look may compete with another installed archive preview extension. NanZip's nested-archive action stays inside its own browser and does not delegate archive previews to third-party extensions.

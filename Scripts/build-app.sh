@@ -40,6 +40,12 @@ export DEVELOPER_DIR
   -c release \
   --product NanZipQuickLook
 
+/usr/bin/swift build \
+  --package-path "$ROOT" \
+  --scratch-path "$SCRATCH" \
+  -c release \
+  --product NanZipXPCService
+
 BIN_PATH="$(/usr/bin/swift build \
   --package-path "$ROOT" \
   --scratch-path "$SCRATCH" \
@@ -50,6 +56,8 @@ rm -rf "$STAGE_APP"
 mkdir -p \
   "$STAGE_APP/Contents/MacOS" \
   "$STAGE_APP/Contents/Resources" \
+  "$STAGE_APP/Contents/XPCServices/NanZipXPCService.xpc/Contents/MacOS" \
+  "$STAGE_APP/Contents/XPCServices/NanZipXPCService.xpc/Contents/Resources/Helpers" \
   "$STAGE_APP/Contents/PlugIns/NanZipFinder.appex/Contents/MacOS" \
   "$STAGE_APP/Contents/PlugIns/NanZipQuickLook.appex/Contents/MacOS" \
   "$STAGE_APP/Contents/Resources/Helpers"
@@ -71,21 +79,38 @@ cp "$BIN_PATH/NanZipQuickLook" \
 cp "$ROOT/Resources/NanZipQuickLook-Info.plist" \
   "$STAGE_APP/Contents/PlugIns/NanZipQuickLook.appex/Contents/Info.plist"
 
+cp "$BIN_PATH/NanZipXPCService" \
+  "$STAGE_APP/Contents/XPCServices/NanZipXPCService.xpc/Contents/MacOS/NanZipXPCService"
+cp "$ROOT/Resources/NanZipXPCService-Info.plist" \
+  "$STAGE_APP/Contents/XPCServices/NanZipXPCService.xpc/Contents/Info.plist"
+cp "$SEVEN_ZIP" \
+  "$STAGE_APP/Contents/XPCServices/NanZipXPCService.xpc/Contents/Resources/Helpers/7zz"
+chmod 755 \
+  "$STAGE_APP/Contents/XPCServices/NanZipXPCService.xpc/Contents/MacOS/NanZipXPCService" \
+  "$STAGE_APP/Contents/XPCServices/NanZipXPCService.xpc/Contents/Resources/Helpers/7zz"
+
 /usr/bin/xattr -cr "$STAGE_APP" 2>/dev/null || true
 
 /usr/bin/codesign --force --options runtime --sign "$SIGN_IDENTITY" \
   "$STAGE_APP/Contents/Resources/Helpers/7zz"
+/usr/bin/codesign --force --options runtime --sign "$SIGN_IDENTITY" \
+  "$STAGE_APP/Contents/XPCServices/NanZipXPCService.xpc/Contents/Resources/Helpers/7zz"
+/usr/bin/codesign --force --options runtime --sign "$SIGN_IDENTITY" \
+  "$STAGE_APP/Contents/XPCServices/NanZipXPCService.xpc"
 /usr/bin/codesign --force --options runtime --sign "$SIGN_IDENTITY" \
   --entitlements "$ROOT/Resources/NanZipFinder.entitlements" \
   "$STAGE_APP/Contents/PlugIns/NanZipFinder.appex"
 /usr/bin/codesign --force --options runtime --sign "$SIGN_IDENTITY" \
   --entitlements "$ROOT/Resources/NanZipQuickLook.entitlements" \
   "$STAGE_APP/Contents/PlugIns/NanZipQuickLook.appex"
-/usr/bin/codesign --force --sign "$SIGN_IDENTITY" "$STAGE_APP"
+/usr/bin/codesign --force --options runtime --sign "$SIGN_IDENTITY" \
+  --entitlements "$ROOT/Resources/NanZip.entitlements" \
+  "$STAGE_APP"
 
 /usr/bin/plutil -lint "$STAGE_APP/Contents/Info.plist"
 /usr/bin/plutil -lint "$STAGE_APP/Contents/PlugIns/NanZipFinder.appex/Contents/Info.plist"
 /usr/bin/plutil -lint "$STAGE_APP/Contents/PlugIns/NanZipQuickLook.appex/Contents/Info.plist"
+/usr/bin/plutil -lint "$STAGE_APP/Contents/XPCServices/NanZipXPCService.xpc/Contents/Info.plist"
 
 rm -rf "$APP"
 mkdir -p "$ROOT/build"
@@ -100,12 +125,18 @@ if [ -n "${NANZIP_INSTALL_APP:-}" ]; then
   /usr/bin/codesign --force --options runtime --sign "$SIGN_IDENTITY" \
     "$EXTERNAL_APP/Contents/Resources/Helpers/7zz"
   /usr/bin/codesign --force --options runtime --sign "$SIGN_IDENTITY" \
+    "$EXTERNAL_APP/Contents/XPCServices/NanZipXPCService.xpc/Contents/Resources/Helpers/7zz"
+  /usr/bin/codesign --force --options runtime --sign "$SIGN_IDENTITY" \
+    "$EXTERNAL_APP/Contents/XPCServices/NanZipXPCService.xpc"
+  /usr/bin/codesign --force --options runtime --sign "$SIGN_IDENTITY" \
     --entitlements "$ROOT/Resources/NanZipFinder.entitlements" \
     "$EXTERNAL_APP/Contents/PlugIns/NanZipFinder.appex"
   /usr/bin/codesign --force --options runtime --sign "$SIGN_IDENTITY" \
     --entitlements "$ROOT/Resources/NanZipQuickLook.entitlements" \
     "$EXTERNAL_APP/Contents/PlugIns/NanZipQuickLook.appex"
-  /usr/bin/codesign --force --sign "$SIGN_IDENTITY" "$EXTERNAL_APP"
+  /usr/bin/codesign --force --options runtime --sign "$SIGN_IDENTITY" \
+    --entitlements "$ROOT/Resources/NanZip.entitlements" \
+    "$EXTERNAL_APP"
   echo "Installed: $EXTERNAL_APP"
 fi
 

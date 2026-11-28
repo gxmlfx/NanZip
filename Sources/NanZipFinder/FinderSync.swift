@@ -4,7 +4,7 @@ import FinderSync
 final class FinderSync: FIFinderSync {
     private let archiveExtensions: Set<String> = [
         "zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "tbz", "tbz2",
-        "xz", "txz", "zst", "tzst", "cab", "iso", "cpio"
+        "xz", "txz", "zst", "tzst", "cab", "iso", "cpio", "001"
     ]
 
     override init() {
@@ -34,13 +34,11 @@ final class FinderSync: FIFinderSync {
 
         if selectedURLs.count == 1,
            archiveExtensions.contains(selectedURLs[0].pathExtension.lowercased()) {
-            let extractItem = NSMenuItem(
-                title: "解压",
-                action: #selector(extractSelection(_:)),
-                keyEquivalent: ""
-            )
-            extractItem.target = self
-            submenu.addItem(extractItem)
+            submenu.addItem(menuItem(title: "智能解压", action: #selector(smartExtractSelection(_:))))
+            submenu.addItem(menuItem(title: "解压到当前目录", action: #selector(extractHereSelection(_:))))
+            submenu.addItem(menuItem(title: "解压到指定文件夹…", action: #selector(extractChooseSelection(_:))))
+            submenu.addItem(.separator())
+            submenu.addItem(menuItem(title: "在 NanZip 中打开", action: #selector(extractSelection(_:))))
         }
 
         parentItem.submenu = submenu
@@ -54,6 +52,24 @@ final class FinderSync: FIFinderSync {
 
     @objc private func extractSelection(_ sender: Any?) {
         openMainApp(host: "extract", urls: FIFinderSyncController.default().selectedItemURLs() ?? [])
+    }
+
+    @objc private func smartExtractSelection(_ sender: Any?) {
+        openMainApp(host: "smart-extract", urls: FIFinderSyncController.default().selectedItemURLs() ?? [])
+    }
+
+    @objc private func extractHereSelection(_ sender: Any?) {
+        openMainApp(host: "extract-here", urls: FIFinderSyncController.default().selectedItemURLs() ?? [])
+    }
+
+    @objc private func extractChooseSelection(_ sender: Any?) {
+        openMainApp(host: "extract-choose", urls: FIFinderSyncController.default().selectedItemURLs() ?? [])
+    }
+
+    private func menuItem(title: String, action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        return item
     }
 
     private func openMainApp(host: String, urls: [URL]) {

@@ -1,6 +1,6 @@
 import Foundation
 
-public enum CompressionFormat: String, CaseIterable, Sendable {
+public enum CompressionFormat: String, CaseIterable, Codable, Sendable {
     case zip
     case sevenZip
     case tar
@@ -52,7 +52,7 @@ public enum CompressionFormat: String, CaseIterable, Sendable {
     }
 }
 
-public enum CompressionLevel: Int, CaseIterable, Sendable {
+public enum CompressionLevel: Int, CaseIterable, Codable, Sendable {
     case fast = 1
     case balanced = 6
     case maximum = 9
@@ -66,15 +66,71 @@ public enum CompressionLevel: Int, CaseIterable, Sendable {
     }
 }
 
-public struct CompressionOptions: Sendable {
+public enum ArchiveFilenameEncoding: String, CaseIterable, Codable, Sendable {
+    case automatic
+    case utf8
+    case cp437
+    case cp936
+    case cp932
+
+    public var title: String {
+        switch self {
+        case .automatic: return "自动检测"
+        case .utf8: return "UTF-8（Unicode）"
+        case .cp437: return "CP437（DOS）"
+        case .cp936: return "CP936 / GBK（简体中文）"
+        case .cp932: return "CP932 / Shift-JIS（日文）"
+        }
+    }
+
+    public var zipCodePage: String? {
+        switch self {
+        case .automatic: return nil
+        case .utf8: return "UTF-8"
+        case .cp437: return "437"
+        case .cp936: return "936"
+        case .cp932: return "932"
+        }
+    }
+
+    public var stringEncoding: String.Encoding? {
+        switch self {
+        case .automatic, .utf8: return .utf8
+        case .cp437:
+            return String.Encoding(
+                rawValue: CFStringConvertEncodingToNSStringEncoding(
+                    CFStringEncoding(CFStringEncodings.dosLatinUS.rawValue)
+                )
+            )
+        case .cp936: return String.Encoding(
+            rawValue: CFStringConvertEncodingToNSStringEncoding(
+                CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)
+            )
+        )
+        case .cp932: return .shiftJIS
+        }
+    }
+}
+
+public struct CompressionOptions: Codable, Sendable {
     public let format: CompressionFormat
     public let level: CompressionLevel
     public let password: String?
+    public let volumeSizeBytes: Int64?
+    public let filenameEncoding: ArchiveFilenameEncoding
 
-    public init(format: CompressionFormat, level: CompressionLevel, password: String? = nil) {
+    public init(
+        format: CompressionFormat,
+        level: CompressionLevel,
+        password: String? = nil,
+        volumeSizeBytes: Int64? = nil,
+        filenameEncoding: ArchiveFilenameEncoding = .automatic
+    ) {
         self.format = format
         self.level = level
         self.password = password?.isEmpty == false ? password : nil
+        self.volumeSizeBytes = volumeSizeBytes.flatMap { $0 > 0 ? $0 : nil }
+        self.filenameEncoding = filenameEncoding
     }
 }
 
@@ -143,6 +199,8 @@ public enum CompressionService {
                 format: options.format,
                 level: options.level,
                 password: options.password,
+                volumeSizeBytes: options.volumeSizeBytes,
+                filenameEncoding: options.filenameEncoding,
                 workingDirectory: rootURL,
                 cancellationToken: cancellationToken
             ) { fraction, path in
@@ -162,6 +220,8 @@ public enum CompressionService {
                 format: .tar,
                 level: options.level,
                 password: nil,
+                volumeSizeBytes: nil,
+                filenameEncoding: .automatic,
                 workingDirectory: rootURL,
                 cancellationToken: cancellationToken
             ) { fraction, path in
@@ -176,13 +236,17 @@ public enum CompressionService {
             }
 
             let filterType = options.format.compressionFilterType!
+            var filterArguments = [
+                "a", "-y", "-sccUTF-8", "-bsp1", "-bso1", "-bse1", "-bb1",
+                "-t\(filterType)", "-mx=\(options.level.rawValue)"
+            ]
+            if let volumeSizeBytes = options.volumeSizeBytes {
+                filterArguments.append("-v\(volumeSizeBytes)b")
+            }
+            filterArguments.append(temporaryOutput.path)
+            filterArguments.append(stageBase.lastPathComponent)
             _ = try SevenZipEngine.run(
-                arguments: [
-                    "a", "-y", "-sccUTF-8", "-bsp1", "-bso1", "-bse1", "-bb1",
-                    "-t\(filterType)", "-mx=\(options.level.rawValue)",
-                    temporaryOutput.path,
-                    stageBase.lastPathComponent
-                ],
+                arguments: filterArguments,
                 workingDirectory: workDirectory,
                 cancellationToken: cancellationToken
             ) { fraction, path in
@@ -198,15 +262,28 @@ public enum CompressionService {
         }
 
         entriesAdded = countEntries(inputURLs, relativeInputs: relativeInputs)
+        let generatedParts = try generatedArchiveParts(
+            baseURL: temporaryOutput,
+            volumeSizeBytes: options.volumeSizeBytes,
+            directory: workDirectory
+        )
+        guard let firstGeneratedPart = generatedParts.first else {
+            throw ArchiveError.fileSystem("压缩引擎没有生成输出文件。")
+        }
         var testArguments = ["t", "-y", "-sccUTF-8", "-bb1"]
         testArguments.append(contentsOf: passwordArguments(options.password))
-        testArguments.append(temporaryOutput.path)
+        testArguments.append(firstGeneratedPart.path)
         _ = try SevenZipEngine.run(arguments: testArguments)
 
-        if fileManager.fileExists(atPath: destinationURL.path) {
+        let finalOutput: URL
+        if options.volumeSizeBytes != nil {
+            finalOutput = try installVolumes(generatedParts, destinationURL: destinationURL)
+        } else if fileManager.fileExists(atPath: destinationURL.path) {
             _ = try fileManager.replaceItemAt(destinationURL, withItemAt: temporaryOutput)
+            finalOutput = destinationURL
         } else {
             try fileManager.moveItem(at: temporaryOutput, to: destinationURL)
+            finalOutput = destinationURL
         }
 
         progress(
@@ -221,7 +298,7 @@ public enum CompressionService {
         return CompressionSummary(
             addedEntries: entriesAdded,
             inputBytes: totalBytes,
-            outputURL: destinationURL
+            outputURL: finalOutput
         )
     }
 
@@ -236,6 +313,8 @@ public enum CompressionService {
         format: CompressionFormat,
         level: CompressionLevel,
         password: String?,
+        volumeSizeBytes: Int64?,
+        filenameEncoding: ArchiveFilenameEncoding,
         workingDirectory: URL,
         cancellationToken: CancellationToken,
         progress: @escaping @Sendable (Double, String) -> Void
@@ -247,6 +326,12 @@ public enum CompressionService {
         if format == .zip, password?.isEmpty == false {
             arguments.append("-mem=AES256")
         }
+        if format == .zip, let codePage = filenameEncoding.zipCodePage {
+            arguments.append("-mcp=\(codePage)")
+        }
+        if let volumeSizeBytes {
+            arguments.append("-v\(volumeSizeBytes)b")
+        }
         arguments.append(contentsOf: passwordArguments(format.supportsEncryption ? password : nil))
         arguments.append(archiveURL.path)
         arguments.append(contentsOf: inputs)
@@ -256,6 +341,60 @@ public enum CompressionService {
             cancellationToken: cancellationToken,
             progress: progress
         )
+    }
+
+    private static func generatedArchiveParts(
+        baseURL: URL,
+        volumeSizeBytes: Int64?,
+        directory: URL
+    ) throws -> [URL] {
+        if volumeSizeBytes == nil {
+            return FileManager.default.fileExists(atPath: baseURL.path) ? [baseURL] : []
+        }
+
+        let prefix = baseURL.lastPathComponent + "."
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        ) else { return [] }
+        var parts: [(Int, URL)] = []
+        for case let candidate as URL in enumerator {
+            let name = candidate.lastPathComponent
+            guard name.hasPrefix(prefix),
+                  let index = Int(name.dropFirst(prefix.count)) else { continue }
+            parts.append((index, candidate))
+        }
+        return parts.sorted { $0.0 < $1.0 }.map(\.1)
+    }
+
+    private static func installVolumes(_ generated: [URL], destinationURL: URL) throws -> URL {
+        let fileManager = FileManager.default
+        let directory = destinationURL.deletingLastPathComponent()
+        let baseName = destinationURL.lastPathComponent
+        if let existing = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
+            for candidate in existing where candidate.lastPathComponent.hasPrefix(baseName + ".") {
+                try? fileManager.removeItem(at: candidate)
+            }
+        }
+
+        var firstDestination: URL?
+        for source in generated {
+            let sourceName = source.lastPathComponent
+            let base = temporaryBaseName(for: sourceName)
+            let suffix = String(sourceName.dropFirst(base.count))
+            let target = directory.appendingPathComponent(baseName + suffix)
+            try fileManager.moveItem(at: source, to: target)
+            firstDestination = firstDestination ?? target
+        }
+        guard let firstDestination else {
+            throw ArchiveError.fileSystem("没有生成分卷文件。")
+        }
+        return firstDestination
+    }
+
+    private static func temporaryBaseName(for name: String) -> String {
+        guard let dot = name.lastIndex(of: ".") else { return name }
+        return String(name[..<dot])
     }
 
     private static func countEntries(_ inputURLs: [URL], relativeInputs: [String]) -> Int {

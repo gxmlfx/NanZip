@@ -1,6 +1,6 @@
 import Foundation
 
-public struct ArchiveItem: Identifiable, Hashable, Sendable {
+public struct ArchiveItem: Identifiable, Hashable, Codable, Sendable {
     public let id: UUID
     public let path: String
     public let size: Int64
@@ -67,14 +67,29 @@ public struct ExtractionSummary: Sendable {
     }
 }
 
-public enum ArchiveOverwritePolicy: String, CaseIterable, Sendable {
+public enum ArchiveOverwritePolicy: String, CaseIterable, Codable, Sendable {
     case keepBoth
     case overwrite
+    case skip
+    case newerOnly
+    case ask
 
     public var title: String {
         switch self {
         case .keepBoth: return "保留两者"
         case .overwrite: return "覆盖同名文件"
+        case .skip: return "跳过已存在文件"
+        case .newerOnly: return "仅覆盖较旧文件"
+        case .ask: return "每次询问"
+        }
+    }
+
+    public var sevenZipArgument: String {
+        switch self {
+        case .keepBoth: return "-aou"
+        case .overwrite, .ask: return "-aoa"
+        case .skip: return "-aos"
+        case .newerOnly: return "-aot"
         }
     }
 }

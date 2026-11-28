@@ -7,7 +7,8 @@ let package = Package(
     products: [
         .executable(name: "NanZip", targets: ["NanZip"]),
         .executable(name: "NanZipFinder", targets: ["NanZipFinder"]),
-        .executable(name: "NanZipQuickLook", targets: ["NanZipQuickLook"])
+        .executable(name: "NanZipQuickLook", targets: ["NanZipQuickLook"]),
+        .executable(name: "NanZipXPCService", targets: ["NanZipXPCService"])
     ],
     targets: [
         .target(
@@ -34,6 +35,11 @@ let package = Package(
                 .linkedFramework("QuickLookUI"),
                 .linkedFramework("Quartz")
             ]
+        ),
+        .executableTarget(
+            name: "NanZipXPCService",
+            dependencies: ["NanZipCore"],
+            path: "Sources/NanZipXPCService"
         )
     ]
 )

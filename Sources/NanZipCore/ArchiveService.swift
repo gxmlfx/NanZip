@@ -3,19 +3,91 @@ import Foundation
 public enum ArchiveService {
     public static let supportedExtensions: Set<String> = [
         "zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "tbz", "tbz2",
-        "xz", "txz", "zst", "tzst", "cab", "iso", "cpio", "lz", "lzma", "z"
+        "xz", "txz", "zst", "tzst", "cab", "iso", "cpio", "lz", "lzma", "z", "001"
     ]
 
-    public static func listArchive(at url: URL, password: String?) throws -> [ArchiveItem] {
+    public static func listArchive(
+        at url: URL,
+        password: String?,
+        filenameEncoding: ArchiveFilenameEncoding = .automatic
+    ) throws -> [ArchiveItem] {
+        try resolvedListing(at: url, password: password, filenameEncoding: filenameEncoding).items
+    }
+
+    private struct ResolvedListing {
+        let items: [ArchiveItem]
+        let mappings: [ArchiveNameMapping]
+    }
+
+    public static func nameMappings(
+        at url: URL,
+        password: String?,
+        filenameEncoding: ArchiveFilenameEncoding
+    ) throws -> [ArchiveNameMapping] {
+        try resolvedListing(
+            at: url,
+            password: password,
+            filenameEncoding: filenameEncoding
+        ).mappings
+    }
+
+    private static func resolvedListing(
+        at url: URL,
+        password: String?,
+        filenameEncoding: ArchiveFilenameEncoding
+    ) throws -> ResolvedListing {
         if isTarCompressed(url) {
             let temporaryDirectory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("nanzip-list-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
             let innerTar = try extractOuterArchive(url, to: temporaryDirectory)
-            return try listDirect(at: innerTar, password: password)
+            let items = try listDirectRaw(at: innerTar, password: password)
+            return ResolvedListing(
+                items: items.sorted(by: archivePathSort),
+                mappings: items.map {
+                    ArchiveNameMapping(
+                        rawPath: $0.path,
+                        displayPath: $0.path,
+                        isDirectory: $0.isDirectory
+                    )
+                }
+            )
         }
-        return try listDirect(at: url, password: password)
+
+        let rawItems = try listDirectRaw(at: url, password: password)
+        var mappings = rawItems.map {
+            ArchiveNameMapping(
+                rawPath: $0.path,
+                displayPath: $0.path,
+                isDirectory: $0.isDirectory
+            )
+        }
+        if url.pathExtension.lowercased() == "zip",
+           let data = try? Data(contentsOf: url, options: [.mappedIfSafe]) {
+            mappings = ZIPFilenameCodec.mappings(
+                rawItems: rawItems,
+                archiveData: data,
+                encoding: filenameEncoding
+            )
+        }
+        let displayItems = zip(rawItems, mappings).map { item, mapping in
+            ArchiveItem(
+                id: item.id,
+                path: mapping.displayPath,
+                size: item.size,
+                compressedSize: item.compressedSize,
+                modifiedAt: item.modifiedAt,
+                isDirectory: item.isDirectory,
+                isSymlink: item.isSymlink,
+                isEncrypted: item.isEncrypted,
+                method: item.method
+            )
+        }
+        return ResolvedListing(
+            items: displayItems.sorted(by: archivePathSort),
+            mappings: mappings
+        )
     }
 
     public static func extract(
@@ -25,12 +97,18 @@ public enum ArchiveService {
         totalBytes: Int64,
         password: String?,
         overwritePolicy: ArchiveOverwritePolicy,
+        filenameEncoding: ArchiveFilenameEncoding = .automatic,
         cancellationToken: CancellationToken,
         progress: @escaping @Sendable (ExtractionProgress) -> Void
     ) throws -> ExtractionSummary {
         if cancellationToken.isCancelled { throw ArchiveError.cancelled }
 
-        let items = try listArchive(at: archiveURL, password: password)
+        let listing = try resolvedListing(
+            at: archiveURL,
+            password: password,
+            filenameEncoding: filenameEncoding
+        )
+        let items = listing.items
         let pathsToValidate: [String]
         if let selectedPaths {
             pathsToValidate = items.map(\.path).filter { selectedPaths.contains($0) }
@@ -40,6 +118,13 @@ public enum ArchiveService {
         for path in pathsToValidate {
             _ = try validatedRelativePath(path)
         }
+
+        let selectedMappings = listing.mappings.filter {
+            selectedPaths?.contains($0.displayPath) ?? true
+        }
+        let rawSelectedPaths: Set<String>? = selectedPaths == nil
+            ? nil
+            : Set(selectedMappings.map(\.rawPath))
 
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: destinationURL, withIntermediateDirectories: true)
@@ -54,7 +139,7 @@ public enum ArchiveService {
             try runExtraction(
                 archiveURL: innerTar,
                 destinationURL: destinationURL,
-                selectedPaths: selectedPaths,
+                selectedPaths: rawSelectedPaths,
                 password: password,
                 overwritePolicy: overwritePolicy,
                 cancellationToken: cancellationToken,
@@ -64,11 +149,16 @@ public enum ArchiveService {
             try runExtraction(
                 archiveURL: archiveURL,
                 destinationURL: destinationURL,
-                selectedPaths: selectedPaths,
+                selectedPaths: rawSelectedPaths,
                 password: password,
                 overwritePolicy: overwritePolicy,
                 cancellationToken: cancellationToken,
                 progress: progress
+            )
+            normalizeExtractedNames(
+                mappings: selectedMappings,
+                destinationURL: destinationURL,
+                overwritePolicy: overwritePolicy
             )
         }
 
@@ -97,14 +187,13 @@ public enum ArchiveService {
         _ = try SevenZipEngine.run(arguments: arguments)
     }
 
-    private static func listDirect(at url: URL, password: String?) throws -> [ArchiveItem] {
+    private static func listDirectRaw(at url: URL, password: String?) throws -> [ArchiveItem] {
         var arguments = ["l", "-slt", "-ba", "-y", "-sccUTF-8"]
         arguments.append(contentsOf: CompressionService.passwordArguments(password))
         arguments.append(url.path)
         let result = try SevenZipEngine.run(arguments: arguments)
         return parseListOutput(result.standardOutput)
             .filter { !$0.path.isEmpty && $0.path != "." }
-            .sorted(by: archivePathSort)
     }
 
     private static func runExtraction(
@@ -119,7 +208,7 @@ public enum ArchiveService {
         var arguments: [String] = [
             "x", "-y", "-sccUTF-8", "-bsp1", "-bso1", "-bse1", "-bb1", "-spd",
             "-o\(destinationURL.path)",
-            overwritePolicy == .overwrite ? "-aoa" : "-aou"
+            overwritePolicy.sevenZipArgument
         ]
         arguments.append(contentsOf: CompressionService.passwordArguments(password))
         if let selectedPaths {
@@ -141,6 +230,65 @@ public enum ArchiveService {
                     totalBytes: 0
                 )
             )
+        }
+    }
+
+    private static func normalizeExtractedNames(
+        mappings: [ArchiveNameMapping],
+        destinationURL: URL,
+        overwritePolicy: ArchiveOverwritePolicy
+    ) {
+        let fileManager = FileManager.default
+        let changedMappings = mappings.filter { $0.rawPath != $0.displayPath }
+        let sortedMappings = changedMappings.sorted {
+            $0.displayPath.split(separator: "/").count > $1.displayPath.split(separator: "/").count
+        }
+        for mapping in sortedMappings {
+            let source = destinationURL.appendingPathComponent(mapping.rawPath)
+            guard fileManager.fileExists(atPath: source.path) else { continue }
+            var target = destinationURL.appendingPathComponent(mapping.displayPath)
+            if source.standardizedFileURL == target.standardizedFileURL { continue }
+            do {
+                try fileManager.createDirectory(
+                    at: target.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                if fileManager.fileExists(atPath: target.path) {
+                    switch overwritePolicy {
+                    case .skip:
+                        continue
+                    case .newerOnly:
+                        let sourceDate = try? source.resourceValues(forKeys: [.contentModificationDateKey])
+                        let targetDate = try? target.resourceValues(forKeys: [.contentModificationDateKey])
+                        guard (sourceDate?.contentModificationDate ?? .distantPast) >
+                                (targetDate?.contentModificationDate ?? .distantFuture) else {
+                            continue
+                        }
+                        try fileManager.removeItem(at: target)
+                    case .overwrite, .ask:
+                        try fileManager.removeItem(at: target)
+                    case .keepBoth:
+                        target = uniqueDestination(for: target)
+                    }
+                }
+                try fileManager.moveItem(at: source, to: target)
+            } catch {
+                continue
+            }
+        }
+    }
+
+    private static func uniqueDestination(for url: URL) -> URL {
+        let fileManager = FileManager.default
+        let directory = url.deletingLastPathComponent()
+        let base = url.deletingPathExtension().lastPathComponent
+        let ext = url.pathExtension
+        var index = 2
+        while true {
+            let name = ext.isEmpty ? "\(base) \(index)" : "\(base) \(index).\(ext)"
+            let candidate = directory.appendingPathComponent(name)
+            if !fileManager.fileExists(atPath: candidate.path) { return candidate }
+            index += 1
         }
     }
 
@@ -170,7 +318,10 @@ public enum ArchiveService {
     }
 
     private static func isTarCompressed(_ url: URL) -> Bool {
-        let name = url.lastPathComponent.lowercased()
+        var name = url.lastPathComponent.lowercased()
+        if let range = name.range(of: #"\.\d{3,}$"#, options: .regularExpression) {
+            name.removeSubrange(range)
+        }
         return name.hasSuffix(".tar.gz") || name.hasSuffix(".tgz") ||
             name.hasSuffix(".tar.bz2") || name.hasSuffix(".tbz") ||
             name.hasSuffix(".tbz2") || name.hasSuffix(".tar.xz") ||

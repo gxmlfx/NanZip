@@ -33,6 +33,8 @@ Supported encoding values: `automatic`, `utf8`, `cp437`, `cp936`, `cp932`.
 
 Supported overwrite values: `keepBoth`, `overwrite`, `skip`, `newerOnly`, `ask`.
 
+Note: when the command is launched from the installed sandboxed app, input paths must be inside a security-scoped path selected through the app UI. The CLI test modes are intended for the debug binary and internal XPC contract checks; use the GUI for external user-selected files.
+
 ## Compression
 
 ```sh
@@ -86,9 +88,29 @@ Run this from the signed app bundle, outside an enclosing command sandbox:
 ```sh
 APP="$NANZIP_APP/Contents/MacOS/NanZip"
 "$APP" --xpc-test /tmp/test.zip /tmp/xpc-output
+"$APP" --xpc-ping-test
+"$APP" --xpc-internal-test
 ```
 
-Expected output includes `items=...` and `extracted=...`. This verifies the app-to-XPC connection and engine invocation from the installed bundle.
+`--xpc-ping-test` verifies the same-Team-ID code-signing requirement. `--xpc-internal-test` creates an isolated in-app fixture and verifies XPC compression, listing, extraction and progress events. Expected output includes `progress_events=...` greater than one.
+
+## Automated core tests
+
+```sh
+./Scripts/test-core.sh
+```
+
+This runs `swift test` with the bundled 7zz path and committed real fixtures under `Tests/NanZipCoreTests/Fixtures`.
+
+## Automated signed-app integration tests
+
+After building and signing the app:
+
+```sh
+NANZIP_APP="$NANZIP_APP" ./Scripts/test-app.sh
+```
+
+This verifies the installed app signature, XPC client requirement, internal XPC staging/progress round trip and Keychain round trip. It must run outside an enclosing command sandbox.
 
 ## Keychain password manager
 
@@ -125,8 +147,12 @@ This creates a temporary Keychain account, reads it back, verifies it appears in
 - Skip and overwrite extraction policies.
 - Path traversal rejection.
 - Installed app XPC list/extract round-trip.
+- XPC client signing requirement and internal round trip: passing.
+- XPC streamed progress events: passing.
+- Real ZIP/7Z/TAR.GZ/GBK fixtures: passing through automated tests.
 - Keychain save/read/list/delete round-trip.
 - Main app sandbox entitlement and nested XPC/extension signing.
+- XPC service sandbox entitlement and 7zz inherit-only entitlement.
 - Batch extraction of two archives through GUI and XPC.
 - GUI archive table, persistent column hiding, document preview, nested archive browsing and batch UI.
 - Finder Sync and Quick Look bundles register and sign; Quick Look itself was previously exercised.

@@ -92,7 +92,7 @@ struct SettingsView: View {
                     .font(.system(size: 40))
                     .foregroundStyle(.orange)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("NanZip 0.4").font(.title2.weight(.bold))
+                    Text("NanZip 0.5").font(.title2.weight(.bold))
                     Text("原生 macOS 归档工作区").foregroundStyle(.secondary)
                 }
             }

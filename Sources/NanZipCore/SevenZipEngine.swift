@@ -23,8 +23,8 @@ public enum SevenZipError: LocalizedError {
             return "找不到随应用打包的 7-Zip 引擎。"
         case .launchFailed(let message):
             return "无法启动 7-Zip 引擎：\(message)"
-        case .processFailed(_, let message):
-            return message
+        case .processFailed(let code, let message):
+            return message == "7-Zip 执行失败" ? "7-Zip 执行失败（exit \(code)）" : message
         case .passphraseRequired:
             return "该压缩包已加密，请输入正确密码后重试。"
         case .invalidArchive(let message):

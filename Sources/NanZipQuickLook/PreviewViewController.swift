@@ -14,8 +14,17 @@ final class PreviewViewController: NSViewController, QLPreviewingController {
         completionHandler handler: @escaping (Error?) -> Void
     ) {
         DispatchQueue.global(qos: .userInitiated).async {
+            let stagingRoot = XPCSharedStorage.stagingRoot
+                .appendingPathComponent("quicklook-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: stagingRoot) }
             do {
-                let items = try ArchiveService.listArchive(at: url, password: nil)
+                try XPCSharedStorage.prepare()
+                try FileManager.default.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
+                let stagedArchive = stagingRoot.appendingPathComponent(url.lastPathComponent)
+                let started = url.startAccessingSecurityScopedResource()
+                defer { if started { url.stopAccessingSecurityScopedResource() } }
+                try FileManager.default.copyItem(at: url, to: stagedArchive)
+                let items = try ArchiveService.listArchive(at: stagedArchive, password: nil)
                 DispatchQueue.main.async {
                     self.installPreview(url: url, items: items)
                     handler(nil)

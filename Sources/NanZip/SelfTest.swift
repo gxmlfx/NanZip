@@ -23,6 +23,10 @@ enum NanZipSelfTest {
             runRepairTest(arguments: arguments)
         case "--xpc-test":
             runXPCTest(arguments: arguments)
+        case "--xpc-internal-test":
+            runInternalXPCTest()
+        case "--xpc-ping-test":
+            runXPCPingTest()
         case "--keychain-test":
             runKeychainTest()
         default:
@@ -263,6 +267,74 @@ enum NanZipSelfTest {
         }
     }
 
+    private static func runXPCPingTest() -> Never {
+        guard ArchiveXPCClient.shared.ping() else {
+            fail(ArchiveXPCClientError.unavailable)
+        }
+        print("xpc-ping=PASS")
+        exit(0)
+    }
+
+    private static func runInternalXPCTest() -> Never {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("nanzip-internal-xpc-\(UUID().uuidString)")
+        let archive = root.appendingPathComponent("internal.zip")
+        let destination = root.appendingPathComponent("out", isDirectory: true)
+        do {
+            try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+            let encodedZIP = "UEsDBBQAAAAAAAAAAAA4LHJ8DAAAAAwAAAAJAAAAaGVsbG8udHh0aW50ZXJuYWwteHBjUEsBAhQAFAAAAAAAAAAAADgscnwMAAAADAAAAAkAAAAAAAAAAAAAAAAAAAAAAGhlbGxvLnR4dFBLBQYAAAAAAQABADcAAAAzAAAAAAA="
+            guard let archiveData = Data(base64Encoded: encodedZIP) else {
+                throw ArchiveError.fileSystem("无法构造内部 ZIP fixture。")
+            }
+            try archiveData.write(to: archive)
+            let client = ArchiveXPCClient.shared
+            let progressLock = NSLock()
+            var progressEvents = 0
+            let listed = try client.perform(
+                ArchiveXPCRequest(operation: .list, archivePath: archive.path),
+                progress: { _ in
+                    progressLock.lock()
+                    progressEvents += 1
+                    progressLock.unlock()
+                }
+            ).items
+            progressLock.lock()
+            let observedProgress = progressEvents
+            progressLock.unlock()
+            guard listed?.isEmpty == false, observedProgress > 1 else {
+                throw ArchiveError.invalidArchive("XPC 内部测试列表为空。")
+            }
+            let input = root.appendingPathComponent("input.txt")
+            try Data("xpc-compress".utf8).write(to: input)
+            let compressed = root.appendingPathComponent("generated.zip")
+            _ = try client.perform(
+                ArchiveXPCRequest(
+                    operation: .compress,
+                    destinationPath: compressed.path,
+                    inputPaths: [input.path],
+                    compressionOptions: CompressionOptions(format: .zip, level: .balanced)
+                )
+            )
+            guard fileManager.fileExists(atPath: compressed.path) else {
+                throw ArchiveError.fileSystem("XPC 内部压缩没有生成文件。")
+            }
+            _ = try client.perform(
+                ArchiveXPCRequest(
+                    operation: .extract,
+                    archivePath: archive.path,
+                    destinationPath: destination.path
+                )
+            )
+            print("xpc-internal=PASS progress_events=\(observedProgress)")
+            try? fileManager.removeItem(at: root)
+            exit(0)
+        } catch {
+            try? fileManager.removeItem(at: root)
+            fail(error)
+        }
+    }
+
     private static func runKeychainTest() -> Never {
         let archiveURL = URL(fileURLWithPath: "/tmp/nanzip-keychain-test-\(UUID().uuidString).zip")
         let password = "nanzip-keychain-\(UUID().uuidString)"
@@ -300,6 +372,8 @@ enum NanZipSelfTest {
           NanZip --delete-test <archive> <archive-path> <password|->
           NanZip --repair-test <archive.zip> <new-output.zip> <password|->
           NanZip --xpc-test <archive> [destination]
+          NanZip --xpc-internal-test
+          NanZip --xpc-ping-test
           NanZip --keychain-test
         Formats: zip, sevenZip, tar, tarGz, tarBz2, tarXz
         """.utf8))

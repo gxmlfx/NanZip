@@ -183,3 +183,45 @@ Verification:
 - Main app entitlement dump confirms App Sandbox and user-selected read/write.
 
 Known follow-up work is recorded in `docs/BANDIZIP_FEATURE_GAP.md`, notably RAR fixtures, CP932 fixture, TAR.BZ2/XZ split fixtures, notarization, and a fully sandboxed XPC file-access bridge for Mac App Store distribution.
+
+## 2026-11-28 — NanZip 0.5 sandboxed XPC and release hardening
+
+User requirements:
+
+- XPC client validation and XPC sandboxing.
+- Security-scoped file access.
+- Streamed XPC progress.
+- Automated test target and first real fixture corpus.
+- Developer ID/notarization workflow.
+
+Implemented:
+
+- Added a same-Team-ID XPC code-signing requirement for the main NanZip bundle identifier.
+- Sandboxed the XPC service and Quick Look extension.
+- Added a private shared staging area at `/Users/Shared/NanZip/XPCStaging`, protected by a narrow absolute-path temporary exception.
+- Moved all user-selected input/output operations to the main app security scope:
+  - Main app stages user input.
+  - XPC receives only staging-root paths.
+  - XPC writes outputs to staging.
+  - Main app copies results back with conflict handling.
+- Signed 7zz with `com.apple.security.inherit` only.
+- Added bidirectional XPC progress protocol through a dedicated callback interface.
+- Added XPC request validation that rejects paths outside the operation staging root.
+- Added staging cleanup and stale-directory cleanup.
+- Added 0700 permissions on the shared staging root.
+- Added `Tests/NanZipCoreTests` with real ZIP, 7Z, TAR.GZ and GBK fixtures.
+- Added `Scripts/test-core.sh`.
+- Added `Scripts/notarize.sh` and `docs/RELEASE.md`.
+- Bumped version to 0.5.0 (build 5).
+
+Verification:
+
+- `xpc-ping=PASS`.
+- `xpc-internal=PASS progress_events=4`.
+- Main-app UI opened a real external ZIP through an open panel and listed it through sandboxed XPC.
+- Main-app UI extracted the external archive after choosing a security-scoped destination.
+- Main-app UI compressed a selected folder after choosing a security-scoped save destination.
+- `swift test` with real fixtures: 6 tests passed, 0 skipped.
+- Full app, XPC and extensions sign and deep-verify.
+- Notarization script was exercised and correctly refused the local Apple Development certificate; an actual Developer ID/notary submission remains blocked on missing Developer ID credentials in the local environment.
+- `security find-identity` reports only `Apple Development`; `notarytool history --keychain-profile nanzip-notary` reports no stored profile.

@@ -4,7 +4,7 @@ Updated: 2026-11-28
 
 This checklist compares NanZip with publicly documented Bandizip capabilities. It is a development plan, not a claim of feature parity.
 
-## Implemented in NanZip 0.4
+## Implemented in NanZip 0.5
 
 - [x] Native macOS archive browser.
 - [x] Left archive tree and central file table.
@@ -32,7 +32,11 @@ This checklist compares NanZip with publicly documented Bandizip capabilities. I
 - [x] ZIP default-application setting helper.
 - [x] Quick Look archive contents listing.
 - [x] Bundled open-source 7-Zip 26.06 engine.
-- [x] Main-app App Sandbox and independent code-signed XPC archive service.
+- [x] Main-app and XPC App Sandbox with same-Team-ID client validation.
+- [x] Private shared staging handoff for security-scoped user input/output.
+- [x] XPC streaming progress and cancellation.
+- [x] Developer ID/notarization release script.
+- [x] SwiftPM automated test target with real ZIP/7Z/TAR.GZ/GBK fixtures.
 - [x] macOS 26/27 Liquid Glass and macOS 14+ fallback.
 - [x] Path traversal preflight checks.
 - [x] Safe ZIP repair copy for unencrypted Store/Deflate entries.
@@ -68,8 +72,8 @@ This checklist compares NanZip with publicly documented Bandizip capabilities. I
 
 ## Remaining macOS/product work
 
-- [ ] Fully sandboxed XPC service with security-scoped file-access handoff.
-- [ ] Developer ID signing, notarization and hardened distribution.
+- [ ] Mac App Store-compatible App Group/container handoff.
+- [ ] Developer ID certificate issuance and actual Apple notary submission.
 - [ ] Sparkle signed auto-update.
 - [ ] Full localization.
 - [ ] VoiceOver, Full Keyboard Access and high-contrast QA.
@@ -80,7 +84,7 @@ This checklist compares NanZip with publicly documented Bandizip capabilities. I
 
 ## Known limitations
 
-- The XPC service is out-of-process and independently signed, but itself remains unsandboxed for direct path access in this Developer ID-oriented build.
+- The XPC service is sandboxed and only accepts shared staging paths. The shared staging path uses a Developer-ID-oriented temporary filesystem exception.
 - Archive edits are atomic via a working copy, but encrypted-header edge cases still need broader fixture coverage.
 - ZIP legacy-name remapping is tested for CP437 and GBK; CP932 is wired through the same decoder but needs a committed fixture.
 - TAR.GZ split extraction is tested; TAR.BZ2/TAR.XZ split extraction follows the same path but needs dedicated regression fixtures.

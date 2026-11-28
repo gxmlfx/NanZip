@@ -4,7 +4,7 @@ Updated: 2026-11-28 (Asia/Shanghai)
 
 ## Current release
 
-- Version: 0.4.0 (build 4)
+- Version: 0.5.0 (build 5)
 - Project location: `$HOME/Projects/NanZip`
 - GitHub repository: `https://github.com/<GITHUB_OWNER>/NanZip`
 - Minimum OS: macOS 14
@@ -14,7 +14,7 @@ Updated: 2026-11-28 (Asia/Shanghai)
 
 - `NanZip`: sandboxed SwiftUI app.
 - `NanZipCore`: archive, compression, editing, preview, repair and XPC protocol code.
-- `NanZipXPCService`: embedded XPC service used for archive operations.
+- `NanZipXPCService`: embedded sandboxed XPC service used for archive operations.
 - `NanZipFinder`: Finder Sync extension.
 - `NanZipQuickLook`: archive contents Quick Look extension.
 - Bundled open-source 7-Zip 26.06 as `Contents/Resources/Helpers/7zz` in the app and XPC bundle.
@@ -23,8 +23,10 @@ Updated: 2026-11-28 (Asia/Shanghai)
 
 - `NanZipCore`, `NanZip`, `NanZipXPCService`, `NanZipFinder` and `NanZipQuickLook` compile in debug and release.
 - Full app bundle signs and verifies, including XPC and extensions.
-- Main app has App Sandbox + user-selected read/write entitlement.
-- XPC service can list and extract from the installed app bundle.
+- Main app and XPC service have App Sandbox; XPC client validation requires `com.gxmlfx.nanzip` and the same Team ID.
+- XPC service accepts only paths under the private shared staging root.
+- XPC internal test verifies list, compression, extraction and streamed progress (`progress_events=4`).
+- SwiftPM core tests pass 6 tests with ZIP/7Z/TAR.GZ/GBK fixtures.
 - ZIP/7Z/TAR.GZ split archives round-trip from `.001`.
 - Encrypted split ZIP round-trip passes.
 - CP437 and CP936 legacy filename extraction/remapping passes.
@@ -34,7 +36,7 @@ Updated: 2026-11-28 (Asia/Shanghai)
 
 ## Known caveats
 
-- XPC service is out-of-process and signed but not sandboxed; a Mac App Store build needs a security-scoped file-access bridge.
+- Shared staging uses a narrow `/Users/Shared/NanZip/` temporary exception; a Mac App Store build needs an App Group or equivalent managed container.
 - RAR/RAR5 extraction has not yet been fixture-tested in this repository.
 - ZIP repair is intentionally limited to unencrypted Store/Deflate entries with recoverable local headers.
 - CP932 decoder is implemented but needs a committed regression fixture.
@@ -42,6 +44,8 @@ Updated: 2026-11-28 (Asia/Shanghai)
 - Archive editing is atomic but encrypted-header and multi-volume editing edge cases need broader coverage.
 - Symlink/special-file policy still needs a dedicated regression suite.
 - Quick Look can compete with other installed archive preview extensions. NanZip's nested-archive view stays internal.
+- Quick Look helper staging is implemented, but Quick Look was not fully revalidated through `qlmanage` in this session.
+- Actual Developer ID notarization is blocked on missing Developer ID certificate and `nanzip-notary` keychain profile; the release script and runbook are ready.
 - Finder extension registration and macOS Services cache may need refresh after reinstall.
 
 ## Commands
@@ -77,3 +81,4 @@ pluginkit -e use -i com.gxmlfx.nanzip.quicklook
 4. `docs/ROADMAP.md`
 5. `docs/UPSTREAM_RESEARCH.md`
 6. `docs/BANDIZIP_FEATURE_GAP.md`
+7. `docs/RELEASE.md`

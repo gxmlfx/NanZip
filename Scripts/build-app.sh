@@ -2,7 +2,17 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DEVELOPER_DIR="${DEVELOPER_DIR:-$(/usr/bin/xcode-select -p)}"
+if [ -z "${DEVELOPER_DIR:-}" ]; then
+  DEVELOPER_DIR="$(/usr/bin/xcode-select -p)"
+  if [ "$DEVELOPER_DIR" = "/Library/Developer/CommandLineTools" ]; then
+    for candidate in /Volumes/*/Applications/Xcode.app/Contents/Developer /Applications/Xcode.app/Contents/Developer; do
+      if [ -d "$candidate" ]; then
+        DEVELOPER_DIR="$candidate"
+        break
+      fi
+    done
+  fi
+fi
 SCRATCH="${NANZIP_SCRATCH:-$HOME/Library/Developer/NanZipBuild}"
 SIGN_IDENTITY="${NANZIP_SIGN_IDENTITY:--}"
 APP="$ROOT/build/NanZip.app"
@@ -92,10 +102,13 @@ chmod 755 \
 /usr/bin/xattr -cr "$STAGE_APP" 2>/dev/null || true
 
 /usr/bin/codesign --force --options runtime --sign "$SIGN_IDENTITY" \
+  --entitlements "$ROOT/Resources/NanZip7zz.entitlements" \
   "$STAGE_APP/Contents/Resources/Helpers/7zz"
 /usr/bin/codesign --force --options runtime --sign "$SIGN_IDENTITY" \
+  --entitlements "$ROOT/Resources/NanZip7zz.entitlements" \
   "$STAGE_APP/Contents/XPCServices/NanZipXPCService.xpc/Contents/Resources/Helpers/7zz"
 /usr/bin/codesign --force --options runtime --sign "$SIGN_IDENTITY" \
+  --entitlements "$ROOT/Resources/NanZipXPCService.entitlements" \
   "$STAGE_APP/Contents/XPCServices/NanZipXPCService.xpc"
 /usr/bin/codesign --force --options runtime --sign "$SIGN_IDENTITY" \
   --entitlements "$ROOT/Resources/NanZipFinder.entitlements" \
@@ -123,10 +136,13 @@ if [ -n "${NANZIP_INSTALL_APP:-}" ]; then
   ditto "$STAGE_APP" "$EXTERNAL_APP"
   /usr/bin/xattr -cr "$EXTERNAL_APP" 2>/dev/null || true
   /usr/bin/codesign --force --options runtime --sign "$SIGN_IDENTITY" \
+    --entitlements "$ROOT/Resources/NanZip7zz.entitlements" \
     "$EXTERNAL_APP/Contents/Resources/Helpers/7zz"
   /usr/bin/codesign --force --options runtime --sign "$SIGN_IDENTITY" \
+    --entitlements "$ROOT/Resources/NanZip7zz.entitlements" \
     "$EXTERNAL_APP/Contents/XPCServices/NanZipXPCService.xpc/Contents/Resources/Helpers/7zz"
   /usr/bin/codesign --force --options runtime --sign "$SIGN_IDENTITY" \
+    --entitlements "$ROOT/Resources/NanZipXPCService.entitlements" \
     "$EXTERNAL_APP/Contents/XPCServices/NanZipXPCService.xpc"
   /usr/bin/codesign --force --options runtime --sign "$SIGN_IDENTITY" \
     --entitlements "$ROOT/Resources/NanZipFinder.entitlements" \

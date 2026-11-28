@@ -24,10 +24,25 @@ enum ArchiveOperationBridge {
         )
     }
 
-    static func extract(_ request: ArchiveXPCRequest) throws -> ExtractionSummary {
+    static func extract(
+        _ request: ArchiveXPCRequest,
+        progress: @escaping @Sendable (ExtractionProgress) -> Void = { _ in }
+    ) throws -> ExtractionSummary {
         if hasEmbeddedXPCService {
             do {
-                let response = try ArchiveXPCClient.shared.perform(request)
+                let response = try ArchiveXPCClient.shared.perform(
+                    request,
+                    progress: { event in
+                        progress(
+                            ExtractionProgress(
+                                fraction: event.fraction,
+                                currentPath: event.currentPath,
+                                processedBytes: event.processedBytes,
+                                totalBytes: event.totalBytes
+                            )
+                        )
+                    }
+                )
                 return ExtractionSummary(
                     extractedFiles: response.extractedFiles ?? 0,
                     skippedEntries: response.skippedEntries ?? 0
@@ -44,7 +59,7 @@ enum ArchiveOperationBridge {
             overwritePolicy: request.overwritePolicy,
             filenameEncoding: request.filenameEncoding,
             cancellationToken: CancellationToken(),
-            progress: { _ in }
+            progress: progress
         )
     }
 
@@ -55,7 +70,19 @@ enum ArchiveOperationBridge {
     ) throws -> CompressionSummary {
         if hasEmbeddedXPCService {
             do {
-                let response = try ArchiveXPCClient.shared.perform(request)
+                let response = try ArchiveXPCClient.shared.perform(
+                    request,
+                    progress: { event in
+                        progress(
+                            CompressionProgress(
+                                fraction: event.fraction,
+                                currentPath: event.currentPath,
+                                processedBytes: event.processedBytes,
+                                totalBytes: event.totalBytes
+                            )
+                        )
+                    }
+                )
                 guard let outputPath = response.outputPath else {
                     throw ArchiveXPCClientError.invalidResponse
                 }
@@ -167,7 +194,12 @@ enum ArchiveOperationBridge {
     ) throws -> ArchiveRepairSummary {
         if hasEmbeddedXPCService {
             do {
-                let response = try ArchiveXPCClient.shared.perform(request)
+                let response = try ArchiveXPCClient.shared.perform(
+                    request,
+                    progress: { event in
+                        progress(event.fraction, event.currentPath)
+                    }
+                )
                 guard let output = response.outputPath else {
                     throw ArchiveXPCClientError.invalidResponse
                 }

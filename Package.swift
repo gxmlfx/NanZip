@@ -40,6 +40,12 @@ let package = Package(
             name: "NanZipXPCService",
             dependencies: ["NanZipCore"],
             path: "Sources/NanZipXPCService"
+        ),
+        .testTarget(
+            name: "NanZipCoreTests",
+            dependencies: ["NanZipCore"],
+            path: "Tests/NanZipCoreTests",
+            resources: [.copy("Fixtures")]
         )
     ]
 )

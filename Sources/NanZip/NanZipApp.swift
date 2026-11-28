@@ -7,7 +7,8 @@ enum NanZipMain {
         if firstArgument == "--self-test" || firstArgument == "--compress-test" ||
             firstArgument == "--volume-test" || firstArgument == "--replace-test" ||
             firstArgument == "--delete-test" || firstArgument == "--repair-test" ||
-            firstArgument == "--xpc-test" || firstArgument == "--keychain-test" {
+            firstArgument == "--xpc-test" || firstArgument == "--xpc-internal-test" ||
+            firstArgument == "--xpc-ping-test" || firstArgument == "--keychain-test" {
             NanZipSelfTest.run()
         }
         NanZipApp.main()

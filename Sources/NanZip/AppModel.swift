@@ -38,6 +38,7 @@ final class AppModel: ObservableObject {
     @Published var selectedFolderPath = ""
     @Published var searchText = ""
     @Published var destinationURL: URL?
+    @Published var destinationIsUserSelected = false
     @Published var password = ""
     @Published var overwritePolicy: ArchiveOverwritePolicy = .keepBoth
     @Published var isLoading = false
@@ -56,6 +57,7 @@ final class AppModel: ObservableObject {
     @Published var compressionVolumeChoice: CompressionVolumeChoice = .none
     @Published var compressionFilenameEncoding: ArchiveFilenameEncoding = .automatic
     @Published var compressionDestinationURL: URL?
+    @Published var compressionDestinationIsUserSelected = false
     @Published var isCompressing = false
     @Published var compressionProgress: Double = 0
     @Published var compressionCurrentPath = ""
@@ -86,6 +88,7 @@ final class AppModel: ObservableObject {
     private var pendingQuickExtractionPolicy: ExtractionDestinationPolicy?
 
     init() {
+        XPCSharedStorage.removeStaleDirectories()
         quickActionObserver = NotificationCenter.default.addObserver(
             forName: .nanZipQuickAction,
             object: nil,
@@ -282,6 +285,7 @@ final class AppModel: ObservableObject {
         panel.directoryURL = destinationURL
         guard panel.runModal() == .OK, let url = panel.url else { return }
         destinationURL = url
+        destinationIsUserSelected = true
     }
 
     func presentCompressionInputPanel() {
@@ -308,6 +312,7 @@ final class AppModel: ObservableObject {
         }
         guard panel.runModal() == .OK, let url = panel.url else { return }
         compressionDestinationURL = url
+        compressionDestinationIsUserSelected = true
     }
 
     func addCompressionInputs(_ urls: [URL]) {
@@ -320,6 +325,7 @@ final class AppModel: ObservableObject {
         compressionInputs = updated
         if compressionDestinationURL == nil {
             compressionDestinationURL = suggestedArchiveDestination()
+            compressionDestinationIsUserSelected = false
         }
         compressionStatusMessage = "已添加 \(compressionInputs.count) 个项目"
     }
@@ -328,6 +334,7 @@ final class AppModel: ObservableObject {
         compressionInputs.removeAll { $0.standardizedFileURL == url.standardizedFileURL }
         if compressionInputs.isEmpty {
             compressionDestinationURL = nil
+            compressionDestinationIsUserSelected = false
             compressionStatusMessage = "选择文件或文件夹后开始压缩"
         } else {
             compressionDestinationURL = suggestedArchiveDestination()
@@ -337,6 +344,7 @@ final class AppModel: ObservableObject {
     func refreshCompressionDestinationForFormat() {
         guard !compressionInputs.isEmpty else { return }
         compressionDestinationURL = suggestedArchiveDestination()
+        compressionDestinationIsUserSelected = false
     }
 
     func openArchive(_ url: URL) {
@@ -363,6 +371,7 @@ final class AppModel: ObservableObject {
         progress = 0
         currentPath = ""
         destinationURL = suggestedExtractionDestination(for: url)
+        destinationIsUserSelected = false
         isLoading = true
         statusMessage = "正在读取归档目录…"
 
@@ -774,7 +783,7 @@ final class AppModel: ObservableObject {
 
     func startCompression() {
         guard !compressionInputs.isEmpty else { return }
-        if compressionDestinationURL == nil {
+        if compressionDestinationURL == nil || !compressionDestinationIsUserSelected {
             presentCompressionDestinationPanel()
             guard compressionDestinationURL != nil else { return }
         }
@@ -890,6 +899,10 @@ final class AppModel: ObservableObject {
 
     func startBatch() {
         guard !batchItems.isEmpty, !isBatchRunning else { return }
+        if batchOutputDirectory == nil {
+            presentBatchOutputPanel()
+            guard batchOutputDirectory != nil else { return }
+        }
         isBatchRunning = true
         batchProgress = 0
         batchStatusMessage = "准备批量处理…"
@@ -1162,6 +1175,10 @@ final class AppModel: ObservableObject {
         label: String
     ) {
         guard let archiveURL else { return }
+        if !destinationIsUserSelected {
+            presentDestinationPanel()
+            guard destinationIsUserSelected, destinationURL != nil else { return }
+        }
         if extractionPolicy == .custom && destinationURL == nil {
             presentDestinationPanel()
             return
@@ -1206,7 +1223,12 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             do {
                 let summary = try await Task.detached(priority: .userInitiated) {
-                    try ArchiveOperationBridge.extract(request)
+                    try ArchiveOperationBridge.extract(request) { update in
+                        DispatchQueue.main.async {
+                            self.progress = update.fraction
+                            self.currentPath = update.currentPath
+                        }
+                    }
                 }.value
 
                 isExtracting = false

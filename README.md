@@ -20,15 +20,17 @@ GitHub: https://github.com/<GITHUB_OWNER>/NanZip
 - 未加密 ZIP 的本地文件头修复副本
 - 批量压缩/解压队列、逐项状态和高级覆盖规则
 - Finder Sync 菜单、Finder Quick Actions、ZIP 默认应用设置入口
-- 主应用 App Sandbox；归档操作由独立签名的 XPC 服务执行
+- 主应用与 XPC 服务均启用 App Sandbox；归档操作由独立签名的 XPC 服务执行
 - 路径穿越防护
 - macOS 26/27 Liquid Glass 界面，macOS 14–25 材质回退
 
 ## 安全架构
 
-主应用启用 App Sandbox，并仅声明用户选择文件的读写权限。归档列表、提取、压缩、编辑、预览、修复和测试通过嵌入的 `NanZipXPCService.xpc` 执行；主应用不直接启动归档引擎。
+主应用启用 App Sandbox，并声明用户选择文件的读写权限。用户选择的输入由主应用在安全作用域内复制到私有共享暂存区；嵌入的 `NanZipXPCService.xpc` 只获得该暂存区路径，完成列表、提取、压缩、编辑、预览、修复和完整性测试后再由主应用安全写回用户目标目录。XPC 服务签名要求固定为 NanZip 主应用标识和同一 Team ID。
 
-当前 XPC 服务为独立签名的非 App Store 架构，服务进程本身未启用 App Sandbox。若目标是 Mac App Store，仍需实现安全作用域书签或等价文件访问传递，并对 XPC 服务启用沙盒。该限制不影响 Developer ID/直接分发场景，但发布前必须明确。
+7zz 由 XPC 服务启动，并使用 `com.apple.security.inherit`；它只继承 XPC 服务的静态沙盒权限，不直接接收任意用户路径。XPC 服务和 7zz 的权限边界记录在 `Resources/*.entitlements`。
+
+这不是 Mac App Store 发布方案：服务使用 `/Users/Shared/NanZip/` 的窄范围临时例外作为共享暂存区。Developer ID 直接分发使用 `Scripts/notarize.sh`，Mac App Store 版本仍需改用正式 App Group 或等价的受管容器方案。
 
 ## 构建
 
@@ -51,6 +53,12 @@ NANZIP_INSTALL_APP="$HOME/Applications/NanZip.app" \
 - 本地：`build/NanZip.app`
 - 安装位置：`$NANZIP_INSTALL_APP`
 
+自动化测试：
+
+```sh
+./Scripts/test-core.sh
+```
+
 ## 目录结构
 
 - `Sources/NanZip`: SwiftUI 主应用、设置页、Quick Actions、XPC 客户端
@@ -70,6 +78,7 @@ NANZIP_INSTALL_APP="$HOME/Applications/NanZip.app" \
 - `docs/TESTING.md`
 - `docs/BANDIZIP_UI_RESEARCH.md`
 - `docs/BANDIZIP_FEATURE_GAP.md`
+- `docs/RELEASE.md`
 
 ## 当前限制
 
@@ -77,5 +86,5 @@ NANZIP_INSTALL_APP="$HOME/Applications/NanZip.app" \
 - ZIP 修复当前针对未加密 ZIP 的中央目录损坏，通过扫描本地文件头恢复 Store/Deflate 条目；不是通用 7Z/RAR 修复器。
 - CP437/CP936/CP932 手动代码页重命名当前针对 ZIP；其他格式依赖 7-Zip 的 Unicode 处理。
 - Quick Look 可能与其他已安装归档预览扩展竞争，这是 macOS 扩展选择行为。
-- 完全 App Store 兼容的沙盒 XPC 文件访问桥仍需实现。
+- Mac App Store 所需的正式 App Group/受管容器方案仍需实现。
 - 详见 `docs/BANDIZIP_FEATURE_GAP.md`。

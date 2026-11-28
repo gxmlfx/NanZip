@@ -5,6 +5,32 @@ import Foundation
     func cancel(_ operationID: String)
 }
 
+@objc public protocol NanZipXPCProgressProtocol: NSObjectProtocol {
+    func update(_ eventData: Data)
+}
+
+public struct ArchiveXPCProgressEvent: Codable, Sendable {
+    public let operationID: String
+    public let fraction: Double
+    public let currentPath: String
+    public let processedBytes: Int64
+    public let totalBytes: Int64
+
+    public init(
+        operationID: String,
+        fraction: Double,
+        currentPath: String,
+        processedBytes: Int64 = 0,
+        totalBytes: Int64 = 0
+    ) {
+        self.operationID = operationID
+        self.fraction = min(max(fraction, 0), 1)
+        self.currentPath = currentPath
+        self.processedBytes = processedBytes
+        self.totalBytes = totalBytes
+    }
+}
+
 public enum ArchiveXPCOperation: String, Codable, Sendable {
     case ping
     case list
@@ -41,6 +67,7 @@ public struct ArchiveXPCRequest: Codable, Sendable {
     public let filenameEncoding: ArchiveFilenameEncoding
     public let compressionOptions: CompressionOptions?
     public let replacements: [ArchiveXPCReplacement]
+    public let stagingRootPath: String?
 
     public init(
         operationID: String = UUID().uuidString,
@@ -54,7 +81,8 @@ public struct ArchiveXPCRequest: Codable, Sendable {
         overwritePolicy: ArchiveOverwritePolicy = .keepBoth,
         filenameEncoding: ArchiveFilenameEncoding = .automatic,
         compressionOptions: CompressionOptions? = nil,
-        replacements: [ArchiveXPCReplacement] = []
+        replacements: [ArchiveXPCReplacement] = [],
+        stagingRootPath: String? = nil
     ) {
         self.operationID = operationID
         self.operation = operation
@@ -68,6 +96,64 @@ public struct ArchiveXPCRequest: Codable, Sendable {
         self.filenameEncoding = filenameEncoding
         self.compressionOptions = compressionOptions
         self.replacements = replacements
+        self.stagingRootPath = stagingRootPath
+    }
+
+    public func replacingStagingRoot(_ path: String) -> ArchiveXPCRequest {
+        ArchiveXPCRequest(
+            operationID: operationID,
+            operation: operation,
+            archivePath: archivePath,
+            destinationPath: destinationPath,
+            inputPaths: inputPaths,
+            selectedPaths: selectedPaths,
+            entryPath: entryPath,
+            password: password,
+            overwritePolicy: overwritePolicy,
+            filenameEncoding: filenameEncoding,
+            compressionOptions: compressionOptions,
+            replacements: replacements,
+            stagingRootPath: path
+        )
+    }
+
+    public func replacingArchivePath(_ path: String?) -> ArchiveXPCRequest {
+        replacing(archivePath: path)
+    }
+
+    public func replacingDestinationPath(_ path: String?) -> ArchiveXPCRequest {
+        replacing(destinationPath: path)
+    }
+
+    public func replacingInputPaths(_ paths: [String]) -> ArchiveXPCRequest {
+        replacing(inputPaths: paths)
+    }
+
+    public func replacingReplacements(_ replacements: [ArchiveXPCReplacement]) -> ArchiveXPCRequest {
+        replacing(replacements: replacements)
+    }
+
+    private func replacing(
+        archivePath: String? = nil,
+        destinationPath: String? = nil,
+        inputPaths: [String]? = nil,
+        replacements: [ArchiveXPCReplacement]? = nil
+    ) -> ArchiveXPCRequest {
+        ArchiveXPCRequest(
+            operationID: operationID,
+            operation: operation,
+            archivePath: archivePath ?? self.archivePath,
+            destinationPath: destinationPath ?? self.destinationPath,
+            inputPaths: inputPaths ?? self.inputPaths,
+            selectedPaths: selectedPaths,
+            entryPath: entryPath,
+            password: password,
+            overwritePolicy: overwritePolicy,
+            filenameEncoding: filenameEncoding,
+            compressionOptions: compressionOptions,
+            replacements: replacements ?? self.replacements,
+            stagingRootPath: stagingRootPath
+        )
     }
 }
 

@@ -52,9 +52,9 @@ Status: complete.
 - [x] Main app App Sandbox.
 - [x] Move archive operations into an independently code-signed XPC service.
 - [x] XPC operation IDs and cancellation.
-- [ ] Sandbox the XPC service and transfer access through security-scoped bookmarks or equivalent.
-- [ ] Validate XPC clients against bundle/team identifiers.
-- [ ] Developer ID signing, notarization and hardened distribution.
+- [x] Sandbox the XPC service and transfer access through a private shared staging area.
+- [x] Validate XPC clients against bundle/team identifiers.
+- [ ] Developer ID certificate issuance and actual notarization submission.
 - [ ] Sparkle-based update feed with signed appcast.
 - [ ] Crash reporting with explicit opt-in.
 - [ ] Release checklist and rollback procedure.

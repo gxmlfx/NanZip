@@ -21,6 +21,21 @@ enum ArchiveXPCClientError: LocalizedError {
     }
 }
 
+private final class XPCProgressReceiver: NSObject, NanZipXPCProgressProtocol {
+    private let callback: (ArchiveXPCProgressEvent) -> Void
+
+    init(callback: @escaping (ArchiveXPCProgressEvent) -> Void) {
+        self.callback = callback
+    }
+
+    func update(_ eventData: Data) {
+        guard let event = try? JSONDecoder().decode(ArchiveXPCProgressEvent.self, from: eventData) else {
+            return
+        }
+        callback(event)
+    }
+}
+
 final class ArchiveXPCClient: @unchecked Sendable {
     static let shared = ArchiveXPCClient()
     static let serviceName = "com.gxmlfx.nanzip.xpc"
@@ -36,7 +51,29 @@ final class ArchiveXPCClient: @unchecked Sendable {
         return cachedAvailability ?? true
     }
 
-    func perform(_ request: ArchiveXPCRequest, timeout: TimeInterval = 60 * 60 * 24) throws -> ArchiveXPCResponse {
+    func perform(
+        _ originalRequest: ArchiveXPCRequest,
+        timeout: TimeInterval = 60 * 60 * 24,
+        progress: @escaping (ArchiveXPCProgressEvent) -> Void = { _ in }
+    ) throws -> ArchiveXPCResponse {
+        let staging: XPCStagingOperation?
+        let request: ArchiveXPCRequest
+        if originalRequest.operation == .ping {
+            staging = nil
+            request = originalRequest
+        } else {
+            let prepared = try XPCStagingOperation(request: originalRequest)
+            staging = prepared
+            request = prepared.xpcRequest
+            progress(
+                ArchiveXPCProgressEvent(
+                    operationID: request.operationID,
+                    fraction: 0.01,
+                    currentPath: "已准备安全暂存区"
+                )
+            )
+        }
+        defer { staging?.cleanup() }
         let payload: Data
         do {
             payload = try JSONEncoder().encode(request)
@@ -49,6 +86,8 @@ final class ArchiveXPCClient: @unchecked Sendable {
         var result: Result<Data, Error>?
         let connection = NSXPCConnection(serviceName: Self.serviceName)
         connection.remoteObjectInterface = NSXPCInterface(with: NanZipXPCProtocol.self)
+        connection.exportedInterface = NSXPCInterface(with: NanZipXPCProgressProtocol.self)
+        connection.exportedObject = XPCProgressReceiver(callback: progress)
         connection.invalidationHandler = {
             lock.lock()
             let hasResult = result != nil
@@ -116,15 +155,22 @@ final class ArchiveXPCClient: @unchecked Sendable {
         if let failure = try? JSONDecoder().decode(ArchiveXPCFailure.self, from: data) {
             throw ArchiveXPCClientError.remote(failure.message)
         }
+        let response: ArchiveXPCResponse
         do {
-            let response = try JSONDecoder().decode(ArchiveXPCResponse.self, from: data)
-            stateLock.lock()
-            cachedAvailability = true
-            stateLock.unlock()
-            return response
+            response = try JSONDecoder().decode(ArchiveXPCResponse.self, from: data)
         } catch {
             throw ArchiveXPCClientError.invalidResponse
         }
+        let finalized: ArchiveXPCResponse
+        do {
+            finalized = try staging?.finalize(response) ?? response
+        } catch {
+            throw error
+        }
+        stateLock.lock()
+        cachedAvailability = true
+        stateLock.unlock()
+        return finalized
     }
 
     func cancel(_ operationID: String) {

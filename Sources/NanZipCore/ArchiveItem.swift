@@ -55,6 +55,18 @@ public struct ExtractionProgress: Sendable {
     public let currentPath: String
     public let processedBytes: Int64
     public let totalBytes: Int64
+
+    public init(
+        fraction: Double,
+        currentPath: String,
+        processedBytes: Int64,
+        totalBytes: Int64
+    ) {
+        self.fraction = fraction
+        self.currentPath = currentPath
+        self.processedBytes = processedBytes
+        self.totalBytes = totalBytes
+    }
 }
 
 public struct ExtractionSummary: Sendable {

@@ -13,6 +13,10 @@ enum NanZipSelfTest {
             runExtractionTest(arguments: arguments)
         case "--compress-test":
             runCompressionTest(arguments: arguments)
+        case "--replace-test":
+            runReplaceTest(arguments: arguments)
+        case "--delete-test":
+            runDeleteTest(arguments: arguments)
         default:
             usage()
         }
@@ -79,6 +83,52 @@ enum NanZipSelfTest {
         }
     }
 
+    private static func runReplaceTest(arguments: [String]) -> Never {
+        guard arguments.count >= 6 else { usage() }
+        let archiveURL = URL(fileURLWithPath: arguments[2])
+        let archivePath = arguments[3]
+        let sourceURL = URL(fileURLWithPath: arguments[4])
+        let password = arguments[5] == "-" ? nil : arguments[5]
+        let token = CancellationToken()
+        do {
+            let summary = try ArchiveEditingService.replaceEntries(
+                in: archiveURL,
+                replacements: [
+                    ArchiveReplacement(archivePath: archivePath, sourceURL: sourceURL)
+                ],
+                password: password,
+                cancellationToken: token
+            )
+            let items = try ArchiveService.listArchive(at: archiveURL, password: password)
+            print("changed=\(summary.changedEntries)")
+            print("items=\(items.count)")
+            print("archive=\(archiveURL.path)")
+            exit(0)
+        } catch {
+            fail(error)
+        }
+    }
+
+    private static func runDeleteTest(arguments: [String]) -> Never {
+        guard arguments.count >= 5 else { usage() }
+        let archiveURL = URL(fileURLWithPath: arguments[2])
+        let archivePath = arguments[3]
+        let password = arguments[4] == "-" ? nil : arguments[4]
+        let token = CancellationToken()
+        do {
+            let summary = try ArchiveEditingService.deleteEntries(
+                from: archiveURL,
+                paths: [archivePath],
+                password: password,
+                cancellationToken: token
+            )
+            print("changed=\(summary.changedEntries)")
+            exit(0)
+        } catch {
+            fail(error)
+        }
+    }
+
     private static func fail(_ error: Error) -> Never {
         FileHandle.standardError.write(Data("SELF_TEST_FAILED: \(error.localizedDescription)\n".utf8))
         exit(1)
@@ -89,7 +139,9 @@ enum NanZipSelfTest {
         Usage:
           NanZip --self-test <archive> <destination> [password]
           NanZip --compress-test <format> <output> <level> <password|-> <input>...
-        Formats: zip, sevenZip, tarGz, tarBz2, tarXz
+          NanZip --replace-test <archive> <archive-path> <source> <password|->
+          NanZip --delete-test <archive> <archive-path> <password|->
+        Formats: zip, sevenZip, tar, tarGz, tarBz2, tarXz
         """.utf8))
         exit(2)
     }

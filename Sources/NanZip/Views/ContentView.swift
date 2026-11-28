@@ -7,9 +7,9 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ModeHeaderView(model: model)
-                .padding(.horizontal, 18)
-                .padding(.top, 12)
+            WorkspaceHeaderView(model: model)
+                .padding(.horizontal, 14)
+                .padding(.top, 10)
 
             Group {
                 switch model.mode {
@@ -40,7 +40,7 @@ struct ContentView: View {
         .overlay {
             if model.isDropTargeted {
                 DropOverlay(mode: model.mode)
-                    .padding(18)
+                    .padding(14)
                     .allowsHitTesting(false)
             }
         }
@@ -49,9 +49,7 @@ struct ContentView: View {
             isTargeted: $model.isDropTargeted,
             perform: handleDrop(providers:)
         )
-        .onOpenURL { url in
-            model.handleOpenURL(url)
-        }
+        .onOpenURL { model.handleOpenURL($0) }
         .alert(
             "操作失败",
             isPresented: Binding(
@@ -59,9 +57,7 @@ struct ContentView: View {
                 set: { if !$0 { model.clearError() } }
             )
         ) {
-            Button("知道了", role: .cancel) {
-                model.clearError()
-            }
+            Button("知道了", role: .cancel) { model.clearError() }
         } message: {
             Text(model.errorMessage ?? "")
         }
@@ -79,7 +75,6 @@ struct ContentView: View {
                         systemImage: model.mode == .extract ? "archivebox" : "plus"
                     )
                 }
-                .help(model.mode == .extract ? "打开压缩包（⌘O）" : "添加文件或文件夹")
             }
 
             ToolbarItemGroup(placement: .primaryAction) {
@@ -100,7 +95,7 @@ struct ContentView: View {
                     Button {
                         model.startCompression()
                     } label: {
-                        Label("开始压缩", systemImage: "arrow.up.doc")
+                        Label("开始压缩", systemImage: "archivebox")
                     }
                     .disabled(!model.canCompress)
                 }
@@ -133,7 +128,7 @@ struct ContentView: View {
     }
 }
 
-private struct ModeHeaderView: View {
+private struct WorkspaceHeaderView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
@@ -144,15 +139,16 @@ private struct ModeHeaderView: View {
                     set: { model.selectMode($0) }
                 )) {
                     ForEach(WorkspaceMode.allCases) { mode in
-                        Label(mode.title, systemImage: mode.symbol)
-                            .tag(mode)
+                        Label(mode.title, systemImage: mode.symbol).tag(mode)
                     }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 250)
+                .frame(width: 230)
 
-                Text(model.mode == .extract ? "浏览、选择性解压、密码与安全检查" : "创建 ZIP、7Z、TAR 与加密 ZIP")
+                Text(model.mode == .extract
+                     ? "归档浏览 · 选择性解压 · 内容编辑 · 完整性测试"
+                     : "新建压缩包 · AES 加密 · 多线程 7-Zip 引擎")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -160,12 +156,18 @@ private struct ModeHeaderView: View {
                 Spacer()
 
                 if model.isBusy {
-                    ProgressView()
-                        .controlSize(.small)
+                    ProgressView().controlSize(.small)
                 }
+
+                Text("7-Zip")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.secondary.opacity(0.09), in: Capsule())
             }
-            .padding(10)
-            .nanZipGlassCard(cornerRadius: 18)
+            .padding(8)
+            .nanZipGlassCard(cornerRadius: 16)
         }
     }
 }
@@ -174,62 +176,157 @@ private struct ArchiveWorkspaceView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        VStack(spacing: 14) {
-            ArchiveHeaderView(model: model)
-            ArchiveTableView(model: model)
+        VStack(spacing: 0) {
+            ArchiveActionBar(model: model)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+
+            HSplitView {
+                ArchiveSidebarView(model: model)
+                    .frame(minWidth: 170, idealWidth: 205, maxWidth: 280)
+
+                VStack(spacing: 0) {
+                    ArchivePathBar(model: model)
+                    ArchiveTableView(model: model)
+                }
+                .frame(minWidth: 620)
+            }
+
             ExtractionOptionsView(model: model)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 10)
         }
-        .padding(18)
+        .padding(.top, 8)
     }
 }
 
-private struct ArchiveHeaderView: View {
+private struct ArchiveActionBar: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        HStack(spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [.orange.opacity(0.95), .red.opacity(0.7)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                Image(systemName: "shippingbox.fill")
-                    .font(.system(size: 25, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 52, height: 52)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(model.archiveURL?.lastPathComponent ?? "")
-                    .font(.title3.weight(.semibold))
-                    .lineLimit(1)
-                HStack(spacing: 12) {
-                    Label("\(model.fileCount) 个文件", systemImage: "doc.on.doc")
-                    Label(Formatting.bytes(model.totalUncompressedSize), systemImage: "externaldrive")
+        NanZipGlassContainer(spacing: 2) {
+            HStack(spacing: 2) {
+                BandizipActionButton(title: "打开", systemImage: "folder") {
+                    model.presentOpenPanel()
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                BandizipActionButton(title: "解压", systemImage: "arrow.down.doc") {
+                    if model.selectedFileCount > 0 { model.extractSelected() } else { model.extractAll() }
+                }
+                .disabled(!model.canExtract)
+                BandizipActionButton(title: "新建", systemImage: "doc.badge.plus") {
+                    model.selectMode(.compress)
+                }
+                Divider().frame(height: 38).padding(.horizontal, 5)
+                BandizipActionButton(title: "添加", systemImage: "plus.square.on.square") {
+                    model.presentAddFilesPanel()
+                }
+                .disabled(!model.canAddToArchive)
+                BandizipActionButton(title: "替换", systemImage: "arrow.triangle.2.circlepath") {
+                    model.presentReplaceFilePanel()
+                }
+                .disabled(!model.canReplaceSelected)
+                BandizipActionButton(title: "删除", systemImage: "trash") {
+                    model.deleteSelectedEntries()
+                }
+                .disabled(!model.canDeleteSelected)
+                Divider().frame(height: 38).padding(.horizontal, 5)
+                BandizipActionButton(title: "测试", systemImage: "checkmark.shield") {
+                    model.testCurrentArchive()
+                }
+                .disabled(!model.canTestArchive)
+
+                Spacer()
             }
-
-            Spacer()
-
-            TextField("筛选文件", text: $model.searchText)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 230)
-
-            NanZipGlassButton {
-                model.presentOpenPanel()
-            } label: {
-                Image(systemName: "ellipsis.circle")
-            }
-            .help("打开另一个压缩包")
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .nanZipGlassCard(cornerRadius: 14)
         }
-        .padding(14)
-        .nanZipGlassCard()
+    }
+}
+
+private struct BandizipActionButton: View {
+    let title: String
+    let systemImage: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 21, weight: .medium))
+                    .frame(height: 24)
+                Text(title)
+                    .font(.caption)
+            }
+            .frame(width: 62, height: 54)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+    }
+}
+
+private struct ArchiveSidebarView: View {
+    @ObservedObject var model: AppModel
+
+    private var nodes: [ArchiveFolderNode] {
+        ArchiveFolderNode.makeTree(from: model.items)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("归档")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+
+            List(selection: Binding(
+                get: { model.selectedFolderPath },
+                set: {
+                    model.selectedFolderPath = $0 ?? ""
+                    model.selectedIDs = []
+                }
+            )) {
+                Label(model.archiveURL?.lastPathComponent ?? "压缩包", systemImage: "archivebox.fill")
+                    .tag("")
+                OutlineGroup(nodes, children: \.children) { node in
+                    Label(node.name, systemImage: "folder.fill")
+                        .tag(node.path)
+                }
+            }
+            .listStyle(.sidebar)
+        }
+        .background(.regularMaterial.opacity(0.55))
+    }
+}
+
+private struct ArchivePathBar: View {
+    @ObservedObject var model: AppModel
+
+    private var breadcrumb: String {
+        if model.selectedFolderPath.isEmpty {
+            return model.archiveURL?.lastPathComponent ?? "归档"
+        }
+        return model.selectedFolderPath
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "folder")
+                .foregroundStyle(.secondary)
+            Text(breadcrumb)
+                .font(.callout.weight(.medium))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer()
+            TextField("搜索归档", text: $model.searchText)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 220)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(.bar)
     }
 }
 
@@ -240,87 +337,81 @@ private struct ArchiveTableView: View {
         Group {
             if model.isLoading {
                 VStack(spacing: 12) {
-                    ProgressView()
-                        .controlSize(.large)
-                    Text("正在读取归档目录…")
-                        .foregroundStyle(.secondary)
+                    ProgressView().controlSize(.large)
+                    Text("正在读取归档目录…").foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if model.filteredItems.isEmpty {
                 VStack(spacing: 10) {
-                    Image(systemName: model.searchText.isEmpty ? "doc.questionmark" : "magnifyingglass")
+                    Image(systemName: model.searchText.isEmpty ? "folder" : "magnifyingglass")
                         .font(.system(size: 34))
                         .foregroundStyle(.secondary)
-                    Text(model.searchText.isEmpty ? "没有可显示的文件" : "没有匹配的文件")
+                    Text(model.searchText.isEmpty ? "此文件夹为空" : "没有匹配的文件")
                         .font(.headline)
-                    if !model.searchText.isEmpty {
-                        Button("清除筛选") {
-                            model.searchText = ""
-                        }
-                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 Table(model.filteredItems, selection: $model.selectedIDs) {
                     TableColumn("名称") { item in
-                        HStack(spacing: 8) {
-                            Image(systemName: item.isDirectory ? "folder.fill" : (item.isSymlink ? "link" : fileIcon(for: item)))
-                                .foregroundStyle(item.isDirectory ? .blue : .secondary)
-                                .frame(width: 16)
-                            Text(item.name)
-                                .lineLimit(1)
-                            if !item.parentPath.isEmpty {
-                                Text(item.parentPath)
-                                    .font(.caption)
-                                    .foregroundStyle(.tertiary)
-                                    .lineLimit(1)
-                            }
-                        }
+                        Text(item.name)
+                            .lineLimit(1)
                     }
-                    .width(min: 260, ideal: 420)
+                    .width(min: 200, ideal: 230)
 
-                    TableColumn("大小") { item in
-                        Text(item.isDirectory ? "—" : (item.isSymlink ? "符号链接" : Formatting.bytes(item.size)))
+                    TableColumn("原始大小") { item in
+                        Text(item.isDirectory ? "—" : Formatting.bytes(item.size))
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
                     }
-                    .width(min: 90, ideal: 110)
+                    .width(min: 65, ideal: 72)
+
+                    TableColumn("压缩后") { item in
+                        Text(item.isDirectory ? "—" : Formatting.bytes(item.compressedSize))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    .width(min: 65, ideal: 72)
+
+                    TableColumn("压缩率") { item in
+                        Text(ratioText(item))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    .width(min: 50, ideal: 55)
 
                     TableColumn("修改日期") { item in
                         Text(Formatting.date(item.modifiedAt))
                             .foregroundStyle(.secondary)
                     }
-                    .width(min: 140, ideal: 180)
+                    .width(min: 100, ideal: 120)
+
+                    TableColumn("方法") { item in
+                        Text(item.isDirectory ? "—" : (item.method.isEmpty ? "—" : item.method))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .width(min: 55, ideal: 65)
                 }
                 .tableStyle(.inset(alternatesRowBackgrounds: true))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.background.opacity(0.68))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(.separator.opacity(0.3), lineWidth: 1)
-        }
+        .background(.background.opacity(0.76))
+    }
+
+    private func ratioText(_ item: ArchiveItem) -> String {
+        guard !item.isDirectory, let ratio = item.compressionRatio else { return "—" }
+        return String(format: "%.0f%%", ratio * 100)
     }
 
     private func fileIcon(for item: ArchiveItem) -> String {
-        let ext = (item.name as NSString).pathExtension.lowercased()
-        switch ext {
-        case "jpg", "jpeg", "png", "heic", "gif", "webp":
-            return "photo"
-        case "mp4", "mov", "mkv", "avi":
-            return "film"
-        case "mp3", "wav", "flac", "aac":
-            return "waveform"
-        case "pdf":
-            return "doc.richtext"
-        case "txt", "md", "rtf":
-            return "doc.text"
-        case "swift", "py", "js", "ts", "c", "h", "cpp":
-            return "chevron.left.forwardslash.chevron.right"
-        default:
-            return "doc"
+        switch (item.name as NSString).pathExtension.lowercased() {
+        case "jpg", "jpeg", "png", "heic", "gif", "webp": return "photo"
+        case "mp4", "mov", "mkv", "avi": return "film"
+        case "mp3", "wav", "flac", "aac": return "waveform"
+        case "pdf": return "doc.richtext"
+        case "txt", "md", "rtf": return "doc.text"
+        case "swift", "py", "js", "ts", "c", "h", "cpp": return "chevron.left.forwardslash.chevron.right"
+        default: return "doc"
         }
     }
 }
@@ -329,75 +420,50 @@ private struct ExtractionOptionsView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 8) {
             HStack(spacing: 10) {
-                Image(systemName: "folder")
-                    .foregroundStyle(.secondary)
+                Image(systemName: "folder").foregroundStyle(.secondary)
                 Text(model.destinationURL?.path ?? "请选择解压位置")
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .foregroundStyle(model.destinationURL == nil ? .secondary : .primary)
                 Spacer()
-                Button("选择位置…") {
-                    model.presentDestinationPanel()
-                }
+                Button("选择位置…") { model.presentDestinationPanel() }
                 if model.destinationURL != nil {
-                    Button {
-                        model.revealDestination()
-                    } label: {
+                    Button { model.revealDestination() } label: {
                         Image(systemName: "folder.badge.questionmark")
                     }
                     .buttonStyle(.borderless)
-                    .help("在 Finder 中显示解压位置")
                 }
             }
 
             HStack(spacing: 12) {
                 SecureField("密码（可选）", text: $model.password)
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 190)
-                    .onSubmit {
-                        model.reloadWithPassword()
-                    }
-
+                    .frame(width: 180)
+                    .onSubmit { model.reloadWithPassword() }
                 Picker("同名文件", selection: $model.overwritePolicy) {
                     ForEach(ArchiveOverwritePolicy.allCases, id: \.self) { policy in
                         Text(policy.title).tag(policy)
                     }
                 }
                 .pickerStyle(.menu)
-                .frame(width: 180)
-
+                .frame(width: 160)
                 Spacer()
-
-                NanZipGlassContainer(spacing: 8) {
-                    if model.selectedFileCount == 0 {
-                        NanZipProminentButton {
-                            model.extractAll()
-                        } label: {
-                            Label("解压全部", systemImage: "arrow.down.doc.fill")
-                        }
-                        .disabled(!model.canExtract)
-                    } else {
-                        NanZipProminentButton {
-                            model.extractSelected()
-                        } label: {
-                            Label(model.selectionLabel, systemImage: "arrow.down.doc.fill")
-                        }
-                        .disabled(!model.canExtractSelected)
-                    }
+                NanZipProminentButton {
+                    if model.selectedFileCount > 0 { model.extractSelected() } else { model.extractAll() }
+                } label: {
+                    Label(model.selectedFileCount > 0 ? model.selectionLabel : "解压全部", systemImage: "arrow.down.doc.fill")
                 }
+                .disabled(model.selectedFileCount > 0 ? !model.canExtractSelected : !model.canExtract)
             }
 
             if model.isExtracting {
-                ProgressStatusView(
-                    progress: model.progress,
-                    currentPath: model.currentPath
-                )
+                ProgressStatusView(progress: model.progress, currentPath: model.currentPath)
             }
         }
-        .padding(14)
-        .nanZipGlassCard()
+        .padding(12)
+        .nanZipGlassCard(cornerRadius: 14)
     }
 }
 
@@ -405,65 +471,33 @@ private struct CompressionWorkspaceView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        VStack(spacing: 14) {
-            CompressionHeaderView(model: model)
-            CompressionInputsView(model: model)
-            CompressionOptionsView(model: model)
-        }
-        .padding(18)
-    }
-}
-
-private struct CompressionHeaderView: View {
-    @ObservedObject var model: AppModel
-
-    var body: some View {
-        HStack(spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [.blue.opacity(0.9), .cyan.opacity(0.62)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                Image(systemName: "arrow.up.doc.fill")
-                    .font(.system(size: 25, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 52, height: 52)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("创建压缩包")
-                    .font(.title3.weight(.semibold))
-                HStack(spacing: 12) {
-                    Label("\(model.compressionInputs.count) 个项目", systemImage: "doc.on.doc")
-                    Label(Formatting.bytes(model.compressionTotalBytes), systemImage: "externaldrive")
+        VStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("新建压缩包").font(.title2.weight(.semibold))
+                    Text("添加文件后设置格式、压缩级别和密码")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                Spacer()
+                Text(model.compressionDestinationURL?.path ?? "未选择保存位置")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 520, alignment: .trailing)
             }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 10)
 
-            Spacer()
-
-            NanZipGlassButton {
-                model.presentCompressionInputPanel()
-            } label: {
-                Label("添加", systemImage: "plus")
+            VStack(spacing: 10) {
+                CompressionInputsView(model: model)
+                CompressionOptionsView(model: model)
             }
-
-            if !model.compressionInputs.isEmpty {
-                Button("清空") {
-                    model.compressionInputs.removeAll()
-                    model.compressionDestinationURL = nil
-                    model.compressionStatusMessage = "选择文件或文件夹后开始压缩"
-                }
-                .foregroundStyle(.secondary)
-            }
+            .padding(.horizontal, 18)
+            .padding(.bottom, 12)
         }
-        .padding(14)
-        .nanZipGlassCard()
+        .padding(.top, 8)
     }
 }
 
@@ -471,62 +505,62 @@ private struct CompressionInputsView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        Group {
-            if model.compressionInputs.isEmpty {
-                VStack(spacing: 14) {
-                    Image(systemName: "plus.rectangle.on.folder")
-                        .font(.system(size: 42))
-                        .foregroundStyle(.blue)
-                    Text("添加文件和文件夹")
-                        .font(.headline)
-                    Text("拖入项目，或点击下方按钮选择。文件夹会保留自身名称。")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                    NanZipProminentButton {
-                        model.presentCompressionInputPanel()
-                    } label: {
-                        Label("选择项目", systemImage: "folder.badge.plus")
-                    }
+        VStack(spacing: 0) {
+            HStack {
+                Text("添加到压缩包").font(.headline)
+                Spacer()
+                Button("添加…") { model.presentCompressionInputPanel() }
+                Button("清空") {
+                    model.compressionInputs.removeAll()
+                    model.compressionDestinationURL = nil
+                    model.compressionStatusMessage = "选择文件或文件夹后开始压缩"
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .disabled(model.compressionInputs.isEmpty)
+            }
+            .padding(10)
+            Divider()
+
+            if model.compressionInputs.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: "plus.rectangle.on.folder")
+                        .font(.system(size: 34))
+                        .foregroundStyle(.blue)
+                    Text("拖入文件或文件夹").font(.headline)
+                    Text("文件夹会保留自身名称").font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 150)
             } else {
                 List {
                     ForEach(model.compressionInputs, id: \.self) { url in
-                        HStack(spacing: 10) {
+                        HStack(spacing: 9) {
                             Image(systemName: isDirectory(url) ? "folder.fill" : "doc.fill")
                                 .foregroundStyle(isDirectory(url) ? .blue : .secondary)
                                 .frame(width: 18)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(url.lastPathComponent)
-                                    .lineLimit(1)
+                                Text(url.lastPathComponent).lineLimit(1)
                                 Text(url.deletingLastPathComponent().path)
                                     .font(.caption)
                                     .foregroundStyle(.tertiary)
                                     .lineLimit(1)
-                                    .truncationMode(.middle)
                             }
                             Spacer()
-                            Button {
-                                model.removeCompressionInput(url)
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundStyle(.tertiary)
+                            Button { model.removeCompressionInput(url) } label: {
+                                Image(systemName: "minus.circle.fill").foregroundStyle(.tertiary)
                             }
                             .buttonStyle(.borderless)
-                            .help("移除")
                         }
-                        .padding(.vertical, 3)
+                        .padding(.vertical, 2)
                     }
                 }
+                .frame(minHeight: 150)
                 .scrollContentBackground(.hidden)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.background.opacity(0.68))
+        .background(.background.opacity(0.72))
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(.separator.opacity(0.3), lineWidth: 1)
+                .stroke(.separator.opacity(0.32), lineWidth: 1)
         }
     }
 
@@ -540,99 +574,94 @@ private struct CompressionOptionsView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 10) {
-                Image(systemName: "externaldrive")
-                    .foregroundStyle(.secondary)
-                Text(model.compressionDestinationURL?.path ?? "请选择压缩包保存位置")
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .foregroundStyle(model.compressionDestinationURL == nil ? .secondary : .primary)
-                Spacer()
-                Button("保存到…") {
-                    model.presentCompressionDestinationPanel()
-                }
-                if model.compressionDestinationURL != nil {
-                    Button {
-                        model.revealCompressionOutput()
-                    } label: {
-                        Image(systemName: "folder")
+        VStack(spacing: 10) {
+            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 9) {
+                GridRow {
+                    Text("文件名")
+                    HStack {
+                        Text(model.compressionDestinationURL?.path ?? "请选择保存位置")
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("浏览…") { model.presentCompressionDestinationPanel() }
                     }
-                    .buttonStyle(.borderless)
+                }
+                GridRow {
+                    Text("压缩格式")
+                    Picker("压缩格式", selection: $model.compressionFormat) {
+                        ForEach(CompressionFormat.allCases, id: \.self) { format in
+                            Text(format.title).tag(format)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 150)
+                    .onChange(of: model.compressionFormat) { _, _ in
+                        model.refreshCompressionDestinationForFormat()
+                    }
+                }
+                GridRow {
+                    Text("压缩级别")
+                    Picker("压缩级别", selection: $model.compressionLevel) {
+                        ForEach(CompressionLevel.allCases, id: \.self) { level in
+                            Text(level.title).tag(level)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 150)
+                }
+                GridRow {
+                    Text("密码")
+                    HStack {
+                        SecureField("可选密码", text: $model.compressionPassword)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 220)
+                            .disabled(!model.compressionFormatSupportsEncryption)
+                        if model.compressionFormatSupportsEncryption {
+                            Text("AES")
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(.blue.opacity(0.1), in: Capsule())
+                        } else {
+                            Text("该格式不支持密码").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                GridRow {
+                    Text("分卷")
+                    Text("不分卷（后续版本）").foregroundStyle(.secondary)
+                }
+                GridRow {
+                    Text("完整性")
+                    Label("创建后自动测试压缩包", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.secondary)
                 }
             }
 
-            HStack(spacing: 12) {
-                Picker("格式", selection: $model.compressionFormat) {
-                    ForEach(CompressionFormat.allCases, id: \.self) { format in
-                        Text(format.title).tag(format)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(width: 145)
-                .onChange(of: model.compressionFormat) { _, _ in
-                    model.refreshCompressionDestinationForFormat()
-                }
-
-                Picker("压缩级别", selection: $model.compressionLevel) {
-                    ForEach(CompressionLevel.allCases, id: \.self) { level in
-                        Text(level.title).tag(level)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(width: 150)
-
-                if model.compressionFormatSupportsEncryption {
-                    SecureField("AES-256 密码", text: $model.compressionPassword)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 190)
-                    Text("AES-256")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.blue)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(.blue.opacity(0.1), in: Capsule())
-                } else if !model.compressionPassword.isEmpty {
-                    Text("该格式暂不支持密码")
+            HStack {
+                if model.isCompressing {
+                    ProgressStatusView(progress: model.compressionProgress, currentPath: model.compressionCurrentPath)
+                } else {
+                    Text(model.compressionStatusMessage)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-
                 Spacer()
-
-                NanZipGlassContainer(spacing: 8) {
-                    NanZipProminentButton {
-                        model.startCompression()
-                    } label: {
-                        Label(model.isCompressing ? "正在压缩" : "开始压缩", systemImage: "archivebox.fill")
-                    }
-                    .disabled(!model.canCompress)
+                Button("取消") { model.selectMode(.extract) }
+                    .disabled(model.isCompressing)
+                NanZipProminentButton {
+                    model.startCompression()
+                } label: {
+                    Label("开始", systemImage: "archivebox.fill")
                 }
-            }
-
-            if model.isCompressing {
-                ProgressStatusView(
-                    progress: model.compressionProgress,
-                    currentPath: model.compressionCurrentPath
-                )
-            } else if let destination = model.compressionDestinationURL,
-                      FileManager.default.fileExists(atPath: destination.path) {
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    Text("已创建：\(destination.lastPathComponent)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("在 Finder 中显示") {
-                        model.revealCompressionOutput()
-                    }
-                    .font(.caption)
-                }
+                .disabled(!model.canCompress)
             }
         }
-        .padding(14)
-        .nanZipGlassCard()
+        .padding(12)
+        .nanZipGlassCard(cornerRadius: 14)
     }
 }
 
@@ -665,70 +694,64 @@ private struct EmptyDropView: View {
     var body: some View {
         VStack(spacing: 24) {
             Spacer()
-
-            ZStack {
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: mode == .extract
-                                ? [.orange.opacity(0.22), .blue.opacity(0.12)]
-                                : [.blue.opacity(0.22), .cyan.opacity(0.12)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 150, height: 150)
-                    .blur(radius: 1)
-
-                Image(systemName: mode == .extract ? "archivebox.fill" : "arrow.up.doc.fill")
-                    .font(.system(size: 72, weight: .medium))
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: mode == .extract
-                                ? [.orange, .red.opacity(0.75)]
-                                : [.blue, .cyan.opacity(0.75)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
+            HStack(spacing: 18) {
+                EmptyActionTile(
+                    title: "打开压缩包",
+                    subtitle: "浏览、解压或编辑已有归档",
+                    systemImage: "archivebox.fill",
+                    color: .blue
+                ) {
+                    model.presentOpenPanel()
+                }
+                EmptyActionTile(
+                    title: "新建压缩包",
+                    subtitle: "ZIP、7Z、TAR，多线程压缩",
+                    systemImage: "doc.badge.plus",
+                    color: .orange
+                ) {
+                    model.selectMode(.compress)
+                }
             }
-
-            VStack(spacing: 8) {
-                Text(mode == .extract ? "把压缩包拖到这里" : "把文件和文件夹拖到这里")
-                    .font(.system(size: 28, weight: .bold, design: .rounded))
-                Text(mode == .extract
-                     ? "支持 ZIP、7Z、RAR、TAR、GZ、XZ、ZST 等常见格式"
-                     : "支持 ZIP、7Z、TAR.GZ、TAR.BZ2、TAR.XZ，ZIP 可加密")
-                    .foregroundStyle(.secondary)
-            }
-
-            NanZipProminentButton {
-                mode == .extract ? model.presentOpenPanel() : model.presentCompressionInputPanel()
-            } label: {
-                Label(mode == .extract ? "打开压缩包…" : "选择项目…", systemImage: mode == .extract ? "folder" : "plus")
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 4)
-            }
-
-            Text(mode == .extract
-                 ? "也可以拖入一个文件夹，将它设为解压目标位置"
-                 : "ZIP 加密使用 WinZip AES-256；旧版系统保持普通材质界面")
+            Text("也可以把文件拖入窗口")
                 .font(.caption)
-                .foregroundStyle(.tertiary)
-
+                .foregroundStyle(.secondary)
             Spacer()
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(40)
+        .padding(30)
+    }
+}
+
+private struct EmptyActionTile: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+    let color: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 12) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 42, weight: .medium))
+                    .foregroundStyle(color)
+                Text(title).font(.title3.weight(.semibold))
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(width: 230, height: 150)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .nanZipGlassCard(cornerRadius: 18)
     }
 }
 
 private struct DropOverlay: View {
     let mode: WorkspaceMode
 
-    private var accent: Color {
-        mode == .extract ? .blue : .cyan
-    }
+    private var accent: Color { mode == .extract ? .blue : .cyan }
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
@@ -763,39 +786,87 @@ private struct DropOverlay: View {
 private struct StatusBarView: View {
     @ObservedObject var model: AppModel
 
-    private var message: String {
-        model.mode == .extract ? model.statusMessage : model.compressionStatusMessage
-    }
-
-    private var detail: String? {
-        if model.mode == .extract {
-            return model.destinationURL?.path
-        }
-        return model.compressionDestinationURL?.path
-    }
-
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 12) {
             if model.isBusy {
-                ProgressView()
-                    .controlSize(.small)
+                ProgressView().controlSize(.small)
             }
-            Text(message)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Spacer()
-            if let detail {
-                Text(detail)
+
+            if model.mode == .extract, model.archiveURL != nil {
+                Text("\(model.selectedItems.count) 项已选")
+                if !model.selectedItems.isEmpty {
+                    Text("原始 \(Formatting.bytes(model.selectedUncompressedTotal))")
+                    Text("压缩后 \(Formatting.bytes(model.selectedCompressedTotal))")
+                } else {
+                    Text("文件 \(model.fileCount)")
+                    Text("原始 \(Formatting.bytes(model.totalUncompressedSize))")
+                }
+                Text("归档 \(Formatting.bytes(model.archiveFileSize))")
+                Spacer()
+                Text(model.statusMessage)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else if model.mode == .compress {
+                Text(model.compressionStatusMessage)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
+                Text(model.compressionDestinationURL?.path ?? "未选择保存位置")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .frame(maxWidth: 340, alignment: .trailing)
+            } else {
+                Text(model.statusMessage)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .font(.caption)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
         .background(.bar)
+    }
+}
+
+private struct ArchiveFolderNode: Identifiable {
+    let id: String
+    let path: String
+    let name: String
+    let children: [ArchiveFolderNode]?
+
+    static func makeTree(from items: [ArchiveItem]) -> [ArchiveFolderNode] {
+        var paths = Set<String>()
+        for item in items {
+            let components = item.path.split(separator: "/").map(String.init)
+            guard !components.isEmpty else { continue }
+            let directoryComponents = item.isDirectory ? components : Array(components.dropLast())
+            for index in 1...max(1, directoryComponents.count) where index <= directoryComponents.count {
+                paths.insert(directoryComponents.prefix(index).joined(separator: "/"))
+            }
+        }
+
+        func parentPath(of path: String) -> String {
+            let components = path.split(separator: "/")
+            guard components.count > 1 else { return "" }
+            return components.dropLast().joined(separator: "/")
+        }
+
+        func children(of parent: String) -> [ArchiveFolderNode] {
+            paths
+                .filter { parentPath(of: $0) == parent }
+                .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+                .map { path in
+                    let nested = children(of: path)
+                    return ArchiveFolderNode(
+                        id: path,
+                        path: path,
+                        name: path.split(separator: "/").last.map(String.init) ?? path,
+                        children: nested.isEmpty ? nil : nested
+                    )
+                }
+        }
+        return children(of: "")
     }
 }

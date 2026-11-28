@@ -93,20 +93,27 @@ private struct QuickLookArchiveView: View {
 
             Table(items) {
                 TableColumn("名称") { item in
-                    HStack(spacing: 7) {
-                        Image(systemName: item.isDirectory ? "folder.fill" : (item.isSymlink ? "link" : "doc"))
-                            .foregroundStyle(item.isDirectory ? .blue : .secondary)
-                            .frame(width: 15)
-                        Text(item.path)
-                            .lineLimit(1)
-                    }
+                    Text(item.path)
+                        .lineLimit(1)
                 }
-                TableColumn("大小") { item in
+                .width(min: 260, ideal: 420)
+                TableColumn("原始大小") { item in
                     Text(item.isDirectory ? "—" : (item.isSymlink ? "符号链接" : ByteCountFormatter.string(fromByteCount: item.size, countStyle: .file)))
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
                 .width(min: 80, ideal: 100)
+                TableColumn("压缩后") { item in
+                    Text(item.isDirectory ? "—" : ByteCountFormatter.string(fromByteCount: item.compressedSize, countStyle: .file))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                .width(min: 80, ideal: 100)
+                TableColumn("方法") { item in
+                    Text(item.isDirectory || item.method.isEmpty ? "—" : item.method)
+                        .foregroundStyle(.secondary)
+                }
+                .width(min: 70, ideal: 90)
             }
             .tableStyle(.inset(alternatesRowBackgrounds: true))
         }

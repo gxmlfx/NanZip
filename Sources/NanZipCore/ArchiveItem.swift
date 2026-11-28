@@ -4,24 +4,38 @@ public struct ArchiveItem: Identifiable, Hashable, Sendable {
     public let id: UUID
     public let path: String
     public let size: Int64
+    public let compressedSize: Int64
     public let modifiedAt: Date?
     public let isDirectory: Bool
     public let isSymlink: Bool
+    public let isEncrypted: Bool
+    public let method: String
 
     public init(
         id: UUID = UUID(),
         path: String,
         size: Int64,
+        compressedSize: Int64 = 0,
         modifiedAt: Date?,
         isDirectory: Bool,
-        isSymlink: Bool = false
+        isSymlink: Bool = false,
+        isEncrypted: Bool = false,
+        method: String = ""
     ) {
         self.id = id
         self.path = path
         self.size = size
+        self.compressedSize = compressedSize
         self.modifiedAt = modifiedAt
         self.isDirectory = isDirectory
         self.isSymlink = isSymlink
+        self.isEncrypted = isEncrypted
+        self.method = method
+    }
+
+    public var compressionRatio: Double? {
+        guard size > 0, compressedSize > 0 else { return nil }
+        return Double(compressedSize) / Double(size)
     }
 
     public var name: String {
@@ -46,6 +60,11 @@ public struct ExtractionProgress: Sendable {
 public struct ExtractionSummary: Sendable {
     public let extractedFiles: Int
     public let skippedEntries: Int
+
+    public init(extractedFiles: Int, skippedEntries: Int) {
+        self.extractedFiles = extractedFiles
+        self.skippedEntries = skippedEntries
+    }
 }
 
 public enum ArchiveOverwritePolicy: String, CaseIterable, Sendable {

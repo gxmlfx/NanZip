@@ -18,9 +18,9 @@ struct SettingsView: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("当前版本 0.2")
+                Text("当前版本 0.3")
                     .font(.headline)
-                Text("归档浏览、选择解压、ZIP/7Z/TAR 创建、AES-256 加密、Finder 右键菜单和 Quick Look 预览。")
+                Text("Bandizip 风格归档浏览、添加/替换/删除内容、ZIP/7Z/TAR 创建与加密、Finder 菜单和 Quick Look 预览。")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

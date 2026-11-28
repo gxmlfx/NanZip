@@ -32,12 +32,14 @@ final class AppModel: ObservableObject {
     @Published var archiveURL: URL?
     @Published var items: [ArchiveItem] = []
     @Published var selectedIDs: Set<ArchiveItem.ID> = []
+    @Published var selectedFolderPath = ""
     @Published var searchText = ""
     @Published var destinationURL: URL?
     @Published var password = ""
     @Published var overwritePolicy: ArchiveOverwritePolicy = .keepBoth
     @Published var isLoading = false
     @Published var isExtracting = false
+    @Published var isEditingArchive = false
     @Published var progress: Double = 0
     @Published var currentPath = ""
     @Published var statusMessage = "拖入压缩包或点击“打开压缩包”"
@@ -60,15 +62,35 @@ final class AppModel: ObservableObject {
     private var cancellationToken: CancellationToken?
 
     var filteredItems: [ArchiveItem] {
-        guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return items
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !query.isEmpty {
+            return items.filter { $0.path.localizedLowercase.contains(query.localizedLowercase) }
         }
-        let query = searchText.localizedLowercase
-        return items.filter { $0.path.localizedLowercase.contains(query) }
+        return items.filter { $0.parentPath == selectedFolderPath }
+    }
+
+    var selectedItems: [ArchiveItem] {
+        items.filter { selectedIDs.contains($0.id) }
+    }
+
+    var selectedEntryPaths: Set<String> {
+        Set(selectedItems.map(\.path))
     }
 
     var totalUncompressedSize: Int64 {
         items.reduce(0) { $0 + ($1.isDirectory ? 0 : $1.size) }
+    }
+
+    var totalCompressedSize: Int64 {
+        items.reduce(0) { $0 + ($1.isDirectory ? 0 : $1.compressedSize) }
+    }
+
+    var archiveFileSize: Int64 {
+        guard let archiveURL,
+              let values = try? archiveURL.resourceValues(forKeys: [.fileSizeKey]) else {
+            return 0
+        }
+        return Int64(values.fileSize ?? 0)
     }
 
     var fileCount: Int {
@@ -100,6 +122,31 @@ final class AppModel: ObservableObject {
         archiveURL != nil && !items.isEmpty && !isBusy
     }
 
+    var selectedUncompressedTotal: Int64 {
+        selectedItems.reduce(0) { $0 + ($1.isDirectory ? 0 : $1.size) }
+    }
+
+    var selectedCompressedTotal: Int64 {
+        selectedItems.reduce(0) { $0 + ($1.isDirectory ? 0 : $1.compressedSize) }
+    }
+
+    var canAddToArchive: Bool {
+        archiveURL != nil && !isBusy
+    }
+
+    var canReplaceSelected: Bool {
+        archiveURL != nil && selectedItems.count == 1 && !isBusy &&
+            selectedItems[0].isDirectory == false
+    }
+
+    var canDeleteSelected: Bool {
+        archiveURL != nil && !selectedItems.isEmpty && !isBusy
+    }
+
+    var canTestArchive: Bool {
+        archiveURL != nil && !isBusy
+    }
+
     var canExtractSelected: Bool {
         canExtract && selectedFileCount > 0
     }
@@ -109,7 +156,7 @@ final class AppModel: ObservableObject {
     }
 
     var isBusy: Bool {
-        isLoading || isExtracting || isCompressing
+        isLoading || isExtracting || isCompressing || isEditingArchive
     }
 
     var canCompress: Bool {
@@ -227,6 +274,7 @@ final class AppModel: ObservableObject {
         archiveURL = url
         items = []
         selectedIDs = []
+        selectedFolderPath = ""
         searchText = ""
         progress = 0
         currentPath = ""
@@ -276,6 +324,80 @@ final class AppModel: ObservableObject {
             totalBytes: selectedUncompressedSize,
             label: "\(selectedPaths.count) 个文件"
         )
+    }
+
+    func presentAddFilesPanel() {
+        guard let archiveURL else { return }
+        let panel = NSOpenPanel()
+        panel.title = "添加到 \(archiveURL.lastPathComponent)"
+        panel.prompt = "添加"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK else { return }
+        let files = panel.urls
+        beginArchiveEdit(operationName: "正在添加文件…") { [password, archiveURL] token in
+            try ArchiveEditingService.addFiles(
+                to: archiveURL,
+                fileURLs: files,
+                password: password.isEmpty ? nil : password,
+                cancellationToken: token
+            )
+        }
+    }
+
+    func presentReplaceFilePanel() {
+        guard let archiveURL,
+              selectedItems.count == 1,
+              let item = selectedItems.first,
+              !item.isDirectory else { return }
+
+        let panel = NSOpenPanel()
+        panel.title = "替换 \(item.path)"
+        panel.prompt = "替换"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let sourceURL = panel.url else { return }
+
+        beginArchiveEdit(operationName: "正在替换归档内容…") { [password, archiveURL] token in
+            try ArchiveEditingService.replaceEntries(
+                in: archiveURL,
+                replacements: [ArchiveReplacement(archivePath: item.path, sourceURL: sourceURL)],
+                password: password.isEmpty ? nil : password,
+                cancellationToken: token
+            )
+        }
+    }
+
+    func deleteSelectedEntries() {
+        guard let archiveURL, !selectedEntryPaths.isEmpty else { return }
+        let alert = NSAlert()
+        alert.messageText = "删除归档中的所选内容？"
+        alert.informativeText = "将从 \(archiveURL.lastPathComponent) 中删除 \(selectedEntryPaths.count) 个条目。原始磁盘文件不会受影响。"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "删除")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let paths = selectedEntryPaths
+        beginArchiveEdit(operationName: "正在删除归档内容…") { [password, archiveURL] token in
+            try ArchiveEditingService.deleteEntries(
+                from: archiveURL,
+                paths: paths,
+                password: password.isEmpty ? nil : password,
+                cancellationToken: token
+            )
+        }
+    }
+
+    func testCurrentArchive() {
+        guard let archiveURL else { return }
+        beginArchiveEdit(operationName: "正在测试压缩包完整性…") { [password, archiveURL] token in
+            _ = token
+            try ArchiveService.testArchive(at: archiveURL, password: password.isEmpty ? nil : password)
+            return ArchiveEditSummary(changedEntries: 0, archiveURL: archiveURL)
+        }
     }
 
     func startCompression() {
@@ -394,6 +516,46 @@ final class AppModel: ObservableObject {
 
     func clearError() {
         errorMessage = nil
+    }
+
+    private func beginArchiveEdit(
+        operationName: String,
+        operation: @escaping @Sendable (CancellationToken) throws -> ArchiveEditSummary
+    ) {
+        guard let archiveURL else { return }
+        let token = CancellationToken()
+        cancellationToken = token
+        isEditingArchive = true
+        progress = 0
+        currentPath = ""
+        statusMessage = operationName
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let summary = try await Task.detached(priority: .userInitiated) {
+                    try operation(token)
+                }.value
+                isEditingArchive = false
+                selectedIDs = []
+                statusMessage = summary.changedEntries > 0
+                    ? "归档内容已更新（\(summary.changedEntries) 项）"
+                    : "压缩包完整性测试通过"
+                let preservedDestination = destinationURL
+                openArchive(archiveURL)
+                destinationURL = preservedDestination
+            } catch {
+                isEditingArchive = false
+                if case ArchiveError.cancelled = error {
+                    statusMessage = "操作已取消"
+                } else if let sevenZipError = error as? SevenZipError,
+                          case .cancelled = sevenZipError {
+                    statusMessage = "操作已取消"
+                } else {
+                    handle(error)
+                }
+            }
+        }
     }
 
     private func startExtraction(

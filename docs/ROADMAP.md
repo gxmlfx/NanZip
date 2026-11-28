@@ -8,8 +8,12 @@ Status: largely complete.
 
 - [x] Rename product, targets, bundle IDs and installed app to NanZip.
 - [x] Split shared archive code into `NanZipCore`.
-- [x] ZIP/7Z/TAR.GZ/TAR.BZ2/TAR.XZ creation.
-- [x] ZIP WinZip AES-256 creation.
+- [x] Bundled open-source 7-Zip 26.06 engine.
+- [x] ZIP/7Z/TAR/TAR.GZ/TAR.BZ2/TAR.XZ creation.
+- [x] ZIP/7Z password creation.
+- [x] Add/replace/delete archive entries.
+- [x] Integrity testing.
+- [x] Bandizip-style command bar, archive tree and file table.
 - [x] Finder Sync extension with one compact `NanZip` submenu.
 - [x] Quick Look Preview extension showing archive contents.
 - [x] macOS 26/27 Liquid Glass enhancement and macOS 14+ material fallback.
@@ -27,14 +31,14 @@ Acceptance criteria:
 - [ ] Cancel a multi-gigabyte extraction/compression and remove partial outputs.
 - [ ] Preserve or deliberately skip symlinks with visible reporting.
 - [ ] Handle duplicate paths, case-insensitive collisions and existing directories.
-- [ ] Detect unsafe paths before writing any file.
-- [ ] Add archive integrity test command and UI status.
+- [x] Detect unsafe paths before writing any file.
+- [x] Add archive integrity test command and UI status.
 - [ ] Add `swift test` target independent of the GUI.
 
 ## Milestone 3 — Archive-manager parity
 
 - [ ] Smart extraction destination based on archive shape.
-- [ ] Add/delete entries inside supported archives.
+- [x] Add/replace/delete entries inside supported archives.
 - [ ] Split/multi-volume archive creation and extraction.
 - [ ] Filename encoding detection: GBK, GB18030, Shift-JIS, CP437 and UTF-8.
 - [ ] Password manager backed by Keychain.

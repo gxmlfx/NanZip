@@ -1,9 +1,9 @@
-import CArchive
 import Foundation
 
 public enum CompressionFormat: String, CaseIterable, Sendable {
     case zip
     case sevenZip
+    case tar
     case tarGz
     case tarBz2
     case tarXz
@@ -12,6 +12,7 @@ public enum CompressionFormat: String, CaseIterable, Sendable {
         switch self {
         case .zip: return "ZIP"
         case .sevenZip: return "7Z"
+        case .tar: return "TAR"
         case .tarGz: return "TAR.GZ"
         case .tarBz2: return "TAR.BZ2"
         case .tarXz: return "TAR.XZ"
@@ -22,6 +23,7 @@ public enum CompressionFormat: String, CaseIterable, Sendable {
         switch self {
         case .zip: return "zip"
         case .sevenZip: return "7z"
+        case .tar: return "tar"
         case .tarGz: return "tar.gz"
         case .tarBz2: return "tar.bz2"
         case .tarXz: return "tar.xz"
@@ -29,7 +31,24 @@ public enum CompressionFormat: String, CaseIterable, Sendable {
     }
 
     public var supportsEncryption: Bool {
-        self == .zip
+        self == .zip || self == .sevenZip
+    }
+
+    var sevenZipType: String {
+        switch self {
+        case .zip: return "zip"
+        case .sevenZip: return "7z"
+        case .tar, .tarGz, .tarBz2, .tarXz: return "tar"
+        }
+    }
+
+    var compressionFilterType: String? {
+        switch self {
+        case .tarGz: return "gzip"
+        case .tarBz2: return "bzip2"
+        case .tarXz: return "xz"
+        default: return nil
+        }
     }
 }
 
@@ -100,236 +119,171 @@ public enum CompressionService {
 
         let fileManager = FileManager.default
         let rootURL = try commonParent(for: inputURLs)
-        let entries = try scanEntries(inputURLs: inputURLs, rootURL: rootURL)
-        let totalBytes = entries.reduce(Int64(0)) { partial, entry in
-            partial + (entry.isRegularFile ? entry.size : 0)
-        }
+        let relativeInputs = inputURLs.map { relativePath(for: $0, from: rootURL) }
+        let totalBytes = inputURLs.reduce(Int64(0)) { $0 + sizeOfItem($1) }
+        let parent = destinationURL.deletingLastPathComponent()
+        try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
 
-        try fileManager.createDirectory(
-            at: destinationURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
+        let workDirectory = fileManager.temporaryDirectory
+            .appendingPathComponent("nanzip-compress-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: workDirectory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: workDirectory) }
+
+        let temporaryName = ".nanzip-\(UUID().uuidString).\(options.format.fileExtension)"
+        let temporaryOutput = workDirectory.appendingPathComponent(temporaryName)
+        let stageBase = workDirectory.appendingPathComponent(
+            "archive.\(options.format.fileExtension == "tar.gz" ? "tar" : options.format.fileExtension)"
         )
-        let temporaryURL = destinationURL
-            .deletingLastPathComponent()
-            .appendingPathComponent(".nanzip-\(UUID().uuidString).partial")
 
-        guard let writer = archive_write_new() else {
-            throw ArchiveError.cannotCreateReader
-        }
-        var writerOpen = false
-        var completed = false
-        defer {
-            if writerOpen { archive_write_close(writer) }
-            archive_write_free(writer)
-            if !completed { try? fileManager.removeItem(at: temporaryURL) }
-        }
-
-        try configure(writer, format: options.format, level: options.level, password: options.password)
-
-        let openResult = temporaryURL.withUnsafeFileSystemRepresentation { path -> Int32 in
-            guard let path else { return ARCHIVE_FAILED }
-            return archive_write_open_filename(writer, path)
-        }
-        guard openResult == ARCHIVE_OK else {
-            throw writeError(writer, fallback: .fileSystem("无法创建目标压缩包。"))
-        }
-        writerOpen = true
-
-        var processedBytes: Int64 = 0
-        var addedEntries = 0
-        var lastReportedBytes: Int64 = -1
-
-        for entry in entries {
-            if cancellationToken.isCancelled { throw ArchiveError.cancelled }
-
-            let archivePath = relativePath(for: entry.url, from: rootURL)
-            guard !archivePath.isEmpty else { continue }
-
-            guard let archiveEntry = archive_entry_new() else {
-                throw ArchiveError.fileSystem("无法创建归档条目。")
-            }
-            defer { archive_entry_free(archiveEntry) }
-
-            archivePath.withCString { archive_entry_set_pathname(archiveEntry, $0) }
-            if let modifiedAt = entry.modifiedAt {
-                archive_entry_set_mtime(archiveEntry, time_t(modifiedAt.timeIntervalSince1970), 0)
-            }
-
-            if entry.isDirectory {
-                archive_entry_set_filetype(archiveEntry, 0o040000)
-                archive_entry_set_perm(archiveEntry, 0o755)
-                let result = archive_write_header(writer, archiveEntry)
-                if result < ARCHIVE_WARN {
-                    throw writeError(writer, fallback: .fileSystem("无法写入目录 \(archivePath)。"))
-                }
-                archive_write_finish_entry(writer)
-                addedEntries += 1
-                continue
-            }
-
-            if entry.isSymlink {
-                archive_entry_set_filetype(archiveEntry, 0o120000)
-                archive_entry_set_perm(archiveEntry, 0o755)
-                if let target = try? fileManager.destinationOfSymbolicLink(atPath: entry.url.path) {
-                    target.withCString { archive_entry_set_symlink(archiveEntry, $0) }
-                }
-                let result = archive_write_header(writer, archiveEntry)
-                if result < ARCHIVE_WARN {
-                    throw writeError(writer, fallback: .fileSystem("无法写入符号链接 \(archivePath)。"))
-                }
-                archive_write_finish_entry(writer)
-                addedEntries += 1
-                continue
-            }
-
-            guard entry.isRegularFile else { continue }
-            archive_entry_set_filetype(archiveEntry, 0o100000)
-            archive_entry_set_perm(archiveEntry, 0o644)
-            archive_entry_set_size(archiveEntry, entry.size)
-
-            let headerResult = archive_write_header(writer, archiveEntry)
-            if headerResult < ARCHIVE_WARN {
-                throw writeError(writer, fallback: .fileSystem("无法写入文件 \(archivePath)。"))
-            }
-
-            guard let handle = FileHandle(forReadingAtPath: entry.url.path) else {
-                throw ArchiveError.fileSystem("无法读取 \(entry.url.lastPathComponent)。")
-            }
-            defer { try? handle.close() }
-
-            while true {
-                if cancellationToken.isCancelled { throw ArchiveError.cancelled }
-                let data = try handle.read(upToCount: 1 << 20) ?? Data()
-                if data.isEmpty { break }
-
-                let written = data.withUnsafeBytes { rawBuffer -> Int in
-                    guard let baseAddress = rawBuffer.baseAddress else { return 0 }
-                    return archive_write_data(writer, baseAddress, data.count)
-                }
-                if written < 0 {
-                    throw writeError(writer, fallback: .fileSystem("写入 \(archivePath) 失败。"))
-                }
-
-                processedBytes += Int64(data.count)
-                if processedBytes - lastReportedBytes >= 1_000_000 {
-                    lastReportedBytes = processedBytes
-                    progress(
-                        CompressionProgress(
-                            fraction: totalBytes > 0
-                                ? min(1, Double(processedBytes) / Double(totalBytes))
-                                : 0,
-                            currentPath: archivePath,
-                            processedBytes: processedBytes,
-                            totalBytes: totalBytes
-                        )
+        var entriesAdded = 0
+        if options.format.compressionFilterType == nil {
+            try add(
+                inputs: relativeInputs,
+                to: temporaryOutput,
+                format: options.format,
+                level: options.level,
+                password: options.password,
+                workingDirectory: rootURL,
+                cancellationToken: cancellationToken
+            ) { fraction, path in
+                progress(
+                    CompressionProgress(
+                        fraction: fraction,
+                        currentPath: path,
+                        processedBytes: Int64(Double(totalBytes) * fraction),
+                        totalBytes: totalBytes
                     )
-                }
+                )
+            }
+        } else {
+            try add(
+                inputs: relativeInputs,
+                to: stageBase,
+                format: .tar,
+                level: options.level,
+                password: nil,
+                workingDirectory: rootURL,
+                cancellationToken: cancellationToken
+            ) { fraction, path in
+                progress(
+                    CompressionProgress(
+                        fraction: fraction * 0.65,
+                        currentPath: path,
+                        processedBytes: Int64(Double(totalBytes) * fraction * 0.65),
+                        totalBytes: totalBytes
+                    )
+                )
             }
 
-            archive_write_finish_entry(writer)
-            addedEntries += 1
+            let filterType = options.format.compressionFilterType!
+            _ = try SevenZipEngine.run(
+                arguments: [
+                    "a", "-y", "-sccUTF-8", "-bsp1", "-bso1", "-bse1", "-bb1",
+                    "-t\(filterType)", "-mx=\(options.level.rawValue)",
+                    temporaryOutput.path,
+                    stageBase.lastPathComponent
+                ],
+                workingDirectory: workDirectory,
+                cancellationToken: cancellationToken
+            ) { fraction, path in
+                progress(
+                    CompressionProgress(
+                        fraction: 0.65 + fraction * 0.35,
+                        currentPath: path.isEmpty ? stageBase.lastPathComponent : path,
+                        processedBytes: Int64(Double(totalBytes) * (0.65 + fraction * 0.35)),
+                        totalBytes: totalBytes
+                    )
+                )
+            }
         }
 
-        guard archive_write_close(writer) == ARCHIVE_OK else {
-            writerOpen = false
-            throw writeError(writer, fallback: .fileSystem("无法完成压缩包。"))
-        }
-        writerOpen = false
+        entriesAdded = countEntries(inputURLs, relativeInputs: relativeInputs)
+        var testArguments = ["t", "-y", "-sccUTF-8", "-bb1"]
+        testArguments.append(contentsOf: passwordArguments(options.password))
+        testArguments.append(temporaryOutput.path)
+        _ = try SevenZipEngine.run(arguments: testArguments)
 
         if fileManager.fileExists(atPath: destinationURL.path) {
-            try fileManager.removeItem(at: destinationURL)
+            _ = try fileManager.replaceItemAt(destinationURL, withItemAt: temporaryOutput)
+        } else {
+            try fileManager.moveItem(at: temporaryOutput, to: destinationURL)
         }
-        try fileManager.moveItem(at: temporaryURL, to: destinationURL)
-        completed = true
 
         progress(
             CompressionProgress(
                 fraction: 1,
                 currentPath: "完成",
-                processedBytes: max(processedBytes, totalBytes),
-                totalBytes: max(processedBytes, totalBytes)
+                processedBytes: totalBytes,
+                totalBytes: totalBytes
             )
         )
 
         return CompressionSummary(
-            addedEntries: addedEntries,
+            addedEntries: entriesAdded,
             inputBytes: totalBytes,
             outputURL: destinationURL
         )
     }
 
-    private struct ScannedEntry {
-        let url: URL
-        let isDirectory: Bool
-        let isRegularFile: Bool
-        let isSymlink: Bool
-        let size: Int64
-        let modifiedAt: Date?
+    public static func passwordArguments(_ password: String?) -> [String] {
+        guard let password, !password.isEmpty else { return [] }
+        return ["-p\(password)"]
     }
 
-    private static func configure(
-        _ writer: OpaquePointer,
+    private static func add(
+        inputs: [String],
+        to archiveURL: URL,
         format: CompressionFormat,
         level: CompressionLevel,
-        password: String?
+        password: String?,
+        workingDirectory: URL,
+        cancellationToken: CancellationToken,
+        progress: @escaping @Sendable (Double, String) -> Void
     ) throws {
-        switch format {
-        case .zip:
-            guard archive_write_set_format_zip(writer) == ARCHIVE_OK else {
-                throw writeError(writer, fallback: .unsupportedFormat("ZIP"))
-            }
-            var options = "compression-level=\(level.rawValue)"
-            if password?.isEmpty == false {
-                options += ",encryption=aes256"
-                password!.withCString { _ = archive_write_set_passphrase(writer, $0) }
-            }
-            guard archive_write_set_options(writer, options) == ARCHIVE_OK else {
-                throw writeError(writer, fallback: .unsupportedFormat("ZIP AES-256"))
-            }
-        case .sevenZip:
-            guard archive_write_set_format_7zip(writer) == ARCHIVE_OK else {
-                throw writeError(writer, fallback: .unsupportedFormat("7Z"))
-            }
-            guard archive_write_set_options(
-                writer,
-                "compression=lzma2,compression-level=\(level.rawValue)"
-            ) == ARCHIVE_OK else {
-                throw writeError(writer, fallback: .unsupportedFormat("7Z"))
-            }
-        case .tarGz:
-            guard archive_write_set_format_pax_restricted(writer) == ARCHIVE_OK else {
-                throw writeError(writer, fallback: .unsupportedFormat("TAR"))
-            }
-            guard archive_write_add_filter_gzip(writer) == ARCHIVE_OK else {
-                throw writeError(writer, fallback: .unsupportedFormat("GZIP"))
-            }
-            _ = archive_write_set_options(writer, "compression-level=\(level.rawValue)")
-        case .tarBz2:
-            guard archive_write_set_format_pax_restricted(writer) == ARCHIVE_OK else {
-                throw writeError(writer, fallback: .unsupportedFormat("TAR"))
-            }
-            guard archive_write_add_filter_bzip2(writer) == ARCHIVE_OK else {
-                throw writeError(writer, fallback: .unsupportedFormat("BZIP2"))
-            }
-            _ = archive_write_set_options(writer, "compression-level=\(level.rawValue)")
-        case .tarXz:
-            guard archive_write_set_format_pax_restricted(writer) == ARCHIVE_OK else {
-                throw writeError(writer, fallback: .unsupportedFormat("TAR"))
-            }
-            guard archive_write_add_filter_xz(writer) == ARCHIVE_OK else {
-                throw writeError(writer, fallback: .unsupportedFormat("XZ"))
-            }
-            _ = archive_write_set_options(writer, "compression-level=\(level.rawValue)")
+        var arguments: [String] = [
+            "a", "-y", "-sccUTF-8", "-bsp1", "-bso1", "-bse1", "-bb1",
+            "-t\(format.sevenZipType)", "-mx=\(level.rawValue)", "-mmt=on"
+        ]
+        if format == .zip, password?.isEmpty == false {
+            arguments.append("-mem=AES256")
         }
+        arguments.append(contentsOf: passwordArguments(format.supportsEncryption ? password : nil))
+        arguments.append(archiveURL.path)
+        arguments.append(contentsOf: inputs)
+        _ = try SevenZipEngine.run(
+            arguments: arguments,
+            workingDirectory: workingDirectory,
+            cancellationToken: cancellationToken,
+            progress: progress
+        )
+    }
+
+    private static func countEntries(_ inputURLs: [URL], relativeInputs: [String]) -> Int {
+        let fileManager = FileManager.default
+        var count = 0
+        for url in inputURLs {
+            var isDirectory: ObjCBool = false
+            if fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+                guard let enumerator = fileManager.enumerator(
+                    at: url,
+                    includingPropertiesForKeys: nil
+                ) else { continue }
+                while enumerator.nextObject() != nil { count += 1 }
+            } else {
+                count += 1
+            }
+        }
+        return max(count, relativeInputs.count)
     }
 
     private static func commonParent(for urls: [URL]) throws -> URL {
         guard let first = urls.first else {
             throw ArchiveError.fileSystem("没有输入文件。")
         }
-        var commonComponents = first.deletingLastPathComponent().standardizedFileURL.pathComponents
+        var commonComponents = first.standardizedFileURL
+            .deletingLastPathComponent().pathComponents
         for url in urls.dropFirst() {
-            let components = url.deletingLastPathComponent().standardizedFileURL.pathComponents
+            let components = url.standardizedFileURL.deletingLastPathComponent().pathComponents
             var prefixCount = 0
             while prefixCount < commonComponents.count,
                   prefixCount < components.count,
@@ -344,86 +298,32 @@ public enum CompressionService {
         return URL(fileURLWithPath: NSString.path(withComponents: commonComponents))
     }
 
-    private static func scanEntries(inputURLs: [URL], rootURL: URL) throws -> [ScannedEntry] {
-        let fileManager = FileManager.default
-        var result: [ScannedEntry] = []
-
-        for inputURL in inputURLs {
-            let rootValues = try inputURL.resourceValues(forKeys: [
-                .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
-                .fileSizeKey, .contentModificationDateKey
-            ])
-            appendScannedEntry(
-                url: inputURL,
-                values: rootValues,
-                fileManager: fileManager,
-                result: &result
-            )
-
-            if rootValues.isDirectory == true {
-                guard let enumerator = fileManager.enumerator(
-                    at: inputURL,
-                    includingPropertiesForKeys: [
-                        .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
-                        .fileSizeKey, .contentModificationDateKey
-                    ],
-                    options: [.skipsPackageDescendants],
-                    errorHandler: { url, error in
-                        NSLog("NanZip scan error for %@: %@", url.path, error.localizedDescription)
-                        return true
-                    }
-                ) else { continue }
-
-                for case let childURL as URL in enumerator {
-                    let values = try childURL.resourceValues(forKeys: [
-                        .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
-                        .fileSizeKey, .contentModificationDateKey
-                    ])
-                    appendScannedEntry(
-                        url: childURL,
-                        values: values,
-                        fileManager: fileManager,
-                        result: &result
-                    )
-                }
-            }
-        }
-
-        return result.sorted { $0.url.path.localizedStandardCompare($1.url.path) == .orderedAscending }
-    }
-
-    private static func appendScannedEntry(
-        url: URL,
-        values: URLResourceValues,
-        fileManager: FileManager,
-        result: inout [ScannedEntry]
-    ) {
-        let isSymlink = values.isSymbolicLink == true
-        let isDirectory = values.isDirectory == true && !isSymlink
-        let isRegularFile = values.isRegularFile == true && !isSymlink
-        result.append(
-            ScannedEntry(
-                url: url,
-                isDirectory: isDirectory,
-                isRegularFile: isRegularFile,
-                isSymlink: isSymlink,
-                size: Int64(values.fileSize ?? 0),
-                modifiedAt: values.contentModificationDate
-            )
-        )
-    }
-
     private static func relativePath(for url: URL, from rootURL: URL) -> String {
         let rootPath = rootURL.standardizedFileURL.path
         let filePath = url.standardizedFileURL.path
         guard filePath.hasPrefix(rootPath) else { return url.lastPathComponent }
-        let relative = String(filePath.dropFirst(rootPath.count))
+        return String(filePath.dropFirst(rootPath.count))
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        return relative
     }
 
-    private static func writeError(_ writer: OpaquePointer, fallback: ArchiveError) -> ArchiveError {
-        guard let message = archive_error_string(writer) else { return fallback }
-        return .fileSystem(String(cString: message))
+    private static func sizeOfItem(_ url: URL) -> Int64 {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return 0 }
+        if !isDirectory.boolValue {
+            let values = try? url.resourceValues(forKeys: [.fileSizeKey])
+            return Int64(values?.fileSize ?? 0)
+        }
+        guard let enumerator = FileManager.default.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey]
+        ) else { return 0 }
+        var total: Int64 = 0
+        for case let child as URL in enumerator {
+            let values = try? child.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            if values?.isRegularFile == true {
+                total += Int64(values?.fileSize ?? 0)
+            }
+        }
+        return total
     }
 }

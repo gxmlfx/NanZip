@@ -30,6 +30,8 @@ NanZip implications:
 Sources:
 
 - Official macOS product page: https://www.bandisoft.com/bandizip.mac/
+- Official macOS screenshot page: https://www.bandisoft.com/bandizip.mac/screenshots/
+- Official Windows screenshot page: https://www.bandisoft.com/bandizip/screenshots/
 - Official Finder integration guide: https://www.bandisoft.com/bandizip.mac/help/finder-extension/
 - Official password guide: https://www.bandisoft.com/bandizip.mac/help/how-to-set-a-password-for-an-archive/
 
@@ -75,7 +77,7 @@ NanZip implications:
 |---|---|---|---|---|
 | Native macOS UI | Yes | Yes | Yes | Yes |
 | ZIP/7Z/TAR extract | Yes | Yes | Yes | Yes, tested |
-| RAR extract | Yes | Yes | Yes | libarchive-backed, not yet fixture-tested |
+| RAR extract | Yes | Yes | Yes | 7-Zip-backed, not yet fixture-tested |
 | ZIP/7Z/TAR create | Yes | Yes | Yes | Yes, tested |
 | Encrypted create | 7z AES-256, ZIP legacy | Yes | Yes | ZIP WinZip AES-256, tested |
 | Finder context menu | Yes | Yes | Yes | Implemented, registered and smoke-tested |

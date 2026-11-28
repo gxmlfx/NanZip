@@ -10,13 +10,8 @@ let package = Package(
         .executable(name: "NanZipQuickLook", targets: ["NanZipQuickLook"])
     ],
     targets: [
-        .systemLibrary(
-            name: "CArchive",
-            path: "Sources/CArchive"
-        ),
         .target(
             name: "NanZipCore",
-            dependencies: ["CArchive"],
             path: "Sources/NanZipCore"
         ),
         .executableTarget(

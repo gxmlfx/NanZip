@@ -1,4 +1,3 @@
-import CArchive
 import Foundation
 
 public enum ArchiveService {
@@ -8,69 +7,15 @@ public enum ArchiveService {
     ]
 
     public static func listArchive(at url: URL, password: String?) throws -> [ArchiveItem] {
-        let reader = try openReader(at: url, password: password)
-        defer { archive_read_free(reader) }
-
-        var items: [ArchiveItem] = []
-        var entry: OpaquePointer?
-
-        while true {
-            let result = archive_read_next_header(reader, &entry)
-            if result == ARCHIVE_EOF { break }
-            if result != ARCHIVE_OK {
-                throw mappedError(reader, fallback: .invalidArchive(errorMessage(reader)))
-            }
-
-            guard let entry else { continue }
-            guard let rawPath = archive_entry_pathname(entry) else {
-                archive_read_data_skip(reader)
-                continue
-            }
-
-            let path = normalizedArchivePath(String(cString: rawPath))
-            guard !path.isEmpty else {
-                archive_read_data_skip(reader)
-                continue
-            }
-
-            let fileType = archive_entry_filetype(entry)
-            let isDirectory = fileType == 0o040000
-            let isSymlink = fileType == 0o120000
-            let size: Int64
-            if archive_entry_size_is_set(entry) != 0 {
-                size = max(0, archive_entry_size(entry))
-            } else {
-                size = 0
-            }
-
-            let modifiedAt: Date?
-            if archive_entry_mtime_is_set(entry) != 0 {
-                modifiedAt = Date(timeIntervalSince1970: TimeInterval(archive_entry_mtime(entry)))
-            } else {
-                modifiedAt = nil
-            }
-
-            items.append(
-                ArchiveItem(
-                    path: path,
-                    size: size,
-                    modifiedAt: modifiedAt,
-                    isDirectory: isDirectory,
-                    isSymlink: isSymlink
-                )
-            )
-
-            archive_read_data_skip(reader)
+        if isTarCompressed(url) {
+            let temporaryDirectory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("nanzip-list-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+            let innerTar = try extractOuterArchive(url, to: temporaryDirectory)
+            return try listDirect(at: innerTar, password: password)
         }
-
-        return items.sorted { lhs, rhs in
-            let lhsParts = lhs.path.split(separator: "/").map(String.init)
-            let rhsParts = rhs.path.split(separator: "/").map(String.init)
-            for (left, right) in zip(lhsParts, rhsParts) where left != right {
-                return left.localizedStandardCompare(right) == .orderedAscending
-            }
-            return lhsParts.count < rhsParts.count
-        }
+        return try listDirect(at: url, password: password)
     }
 
     public static func extract(
@@ -85,300 +30,210 @@ public enum ArchiveService {
     ) throws -> ExtractionSummary {
         if cancellationToken.isCancelled { throw ArchiveError.cancelled }
 
+        let items = try listArchive(at: archiveURL, password: password)
+        let pathsToValidate: [String]
+        if let selectedPaths {
+            pathsToValidate = items.map(\.path).filter { selectedPaths.contains($0) }
+        } else {
+            pathsToValidate = items.map(\.path)
+        }
+        for path in pathsToValidate {
+            _ = try validatedRelativePath(path)
+        }
+
         let fileManager = FileManager.default
-        try fileManager.createDirectory(
-            at: destinationURL,
-            withIntermediateDirectories: true
-        )
+        try fileManager.createDirectory(at: destinationURL, withIntermediateDirectories: true)
 
-        let reader = try openReader(at: archiveURL, password: password)
-        defer { archive_read_free(reader) }
+        if isTarCompressed(archiveURL) {
+            let temporaryDirectory = fileManager.temporaryDirectory
+                .appendingPathComponent("nanzip-extract-\(UUID().uuidString)", isDirectory: true)
+            try fileManager.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+            defer { try? fileManager.removeItem(at: temporaryDirectory) }
 
-        var entry: OpaquePointer?
-        var extractedFiles = 0
-        var skippedEntries = 0
-        var processedBytes: Int64 = 0
-        var lastReportedBytes: Int64 = -1
-
-        while true {
-            if cancellationToken.isCancelled { throw ArchiveError.cancelled }
-
-            let result = archive_read_next_header(reader, &entry)
-            if result == ARCHIVE_EOF { break }
-            if result != ARCHIVE_OK {
-                throw mappedError(reader, fallback: .invalidArchive(errorMessage(reader)))
-            }
-
-            guard let entry else { continue }
-            guard let rawPath = archive_entry_pathname(entry) else {
-                skippedEntries += 1
-                archive_read_data_skip(reader)
-                continue
-            }
-
-            let archivePath = normalizedArchivePath(String(cString: rawPath))
-            guard !archivePath.isEmpty else {
-                skippedEntries += 1
-                archive_read_data_skip(reader)
-                continue
-            }
-
-            if let selectedPaths, !selectedPaths.contains(archivePath) {
-                archive_read_data_skip(reader)
-                continue
-            }
-
-            let fileType = archive_entry_filetype(entry)
-            let isDirectory = fileType == 0o040000
-            let isRegularFile = fileType == 0o100000 || fileType == 0
-            let isSymlink = fileType == 0o120000
-
-            if isSymlink {
-                skippedEntries += 1
-                archive_read_data_skip(reader)
-                continue
-            }
-
-            guard isDirectory || isRegularFile else {
-                skippedEntries += 1
-                archive_read_data_skip(reader)
-                continue
-            }
-
-            let destination = try safeDestination(for: archivePath, root: destinationURL)
-
-            if isDirectory {
-                do {
-                    try fileManager.createDirectory(
-                        at: destination,
-                        withIntermediateDirectories: true
-                    )
-                    applyMetadata(from: entry, to: destination)
-                } catch {
-                    throw ArchiveError.fileSystem(error.localizedDescription)
-                }
-                archive_read_data_skip(reader)
-                continue
-            }
-
-            do {
-                try fileManager.createDirectory(
-                    at: destination.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-            } catch {
-                throw ArchiveError.fileSystem(error.localizedDescription)
-            }
-
-            let finalURL = resolvedFileURL(
-                destination,
+            let innerTar = try extractOuterArchive(archiveURL, to: temporaryDirectory)
+            try runExtraction(
+                archiveURL: innerTar,
+                destinationURL: destinationURL,
+                selectedPaths: selectedPaths,
+                password: password,
                 overwritePolicy: overwritePolicy,
-                fileManager: fileManager
+                cancellationToken: cancellationToken,
+                progress: progress
             )
+        } else {
+            try runExtraction(
+                archiveURL: archiveURL,
+                destinationURL: destinationURL,
+                selectedPaths: selectedPaths,
+                password: password,
+                overwritePolicy: overwritePolicy,
+                cancellationToken: cancellationToken,
+                progress: progress
+            )
+        }
 
-            let temporaryURL = finalURL
-                .deletingLastPathComponent()
-                .appendingPathComponent(".arcbox-\(UUID().uuidString).partial")
-
-            fileManager.createFile(atPath: temporaryURL.path, contents: nil)
-            guard let handle = FileHandle(forWritingAtPath: temporaryURL.path) else {
-                throw ArchiveError.fileSystem("无法创建临时文件 \(temporaryURL.lastPathComponent)")
-            }
-
-            var completed = false
-            defer {
-                try? handle.close()
-                if !completed {
-                    try? fileManager.removeItem(at: temporaryURL)
-                }
-            }
-
-            var buffer = [UInt8](repeating: 0, count: 1 << 20)
-            while true {
-                if cancellationToken.isCancelled { throw ArchiveError.cancelled }
-
-                let byteCount = buffer.withUnsafeMutableBytes { rawBuffer -> Int in
-                    guard let baseAddress = rawBuffer.baseAddress else { return 0 }
-                    return archive_read_data(reader, baseAddress, rawBuffer.count)
-                }
-
-                if byteCount == 0 { break }
-                if byteCount < 0 {
-                    throw mappedError(reader, fallback: .invalidArchive(errorMessage(reader)))
-                }
-
-                do {
-                    try handle.write(contentsOf: Data(buffer[0..<byteCount]))
-                } catch {
-                    throw ArchiveError.fileSystem(error.localizedDescription)
-                }
-
-                processedBytes += Int64(byteCount)
-                if processedBytes - lastReportedBytes >= 1_000_000 {
-                    lastReportedBytes = processedBytes
-                    let fraction = totalBytes > 0
-                        ? min(1, Double(processedBytes) / Double(totalBytes))
-                        : 0
-                    progress(
-                        ExtractionProgress(
-                            fraction: fraction,
-                            currentPath: archivePath,
-                            processedBytes: processedBytes,
-                            totalBytes: totalBytes
-                        )
-                    )
-                }
-            }
-
-            try handle.close()
-            completed = true
-
-            do {
-                if fileManager.fileExists(atPath: finalURL.path) {
-                    try fileManager.removeItem(at: finalURL)
-                }
-                try fileManager.moveItem(at: temporaryURL, to: finalURL)
-                applyMetadata(from: entry, to: finalURL)
-            } catch {
-                throw ArchiveError.fileSystem(error.localizedDescription)
-            }
-
-            extractedFiles += 1
+        let selectedItems: [ArchiveItem]
+        if let selectedPaths {
+            selectedItems = items.filter { selectedPaths.contains($0.path) && !$0.isDirectory }
+        } else {
+            selectedItems = items.filter { !$0.isDirectory }
         }
 
         progress(
             ExtractionProgress(
                 fraction: 1,
                 currentPath: "完成",
-                processedBytes: max(processedBytes, totalBytes),
-                totalBytes: max(processedBytes, totalBytes)
+                processedBytes: totalBytes,
+                totalBytes: totalBytes
             )
         )
-
-        return ExtractionSummary(
-            extractedFiles: extractedFiles,
-            skippedEntries: skippedEntries
-        )
+        return ExtractionSummary(extractedFiles: selectedItems.count, skippedEntries: 0)
     }
 
-    private static func openReader(at url: URL, password: String?) throws -> OpaquePointer {
-        guard let reader = archive_read_new() else {
-            throw ArchiveError.cannotCreateReader
-        }
-
-        archive_read_support_filter_all(reader)
-        archive_read_support_format_all(reader)
-
-        if let password, !password.isEmpty {
-            archive_read_add_passphrase(reader, password)
-        }
-
-        let openResult = url.withUnsafeFileSystemRepresentation { path -> Int32 in
-            guard let path else { return ARCHIVE_FAILED }
-            return archive_read_open_filename(reader, path, 1 << 20)
-        }
-
-        guard openResult == ARCHIVE_OK else {
-            let error = mappedError(reader, fallback: .cannotOpen(errorMessage(reader)))
-            archive_read_free(reader)
-            throw error
-        }
-
-        return reader
+    public static func testArchive(at url: URL, password: String?) throws {
+        var arguments = ["t", "-y", "-sccUTF-8", "-bb1"]
+        arguments.append(contentsOf: CompressionService.passwordArguments(password))
+        arguments.append(url.path)
+        _ = try SevenZipEngine.run(arguments: arguments)
     }
 
-    private static func safeDestination(for path: String, root: URL) throws -> URL {
-        let normalized = path.replacingOccurrences(of: "\\", with: "/")
-        guard !normalized.hasPrefix("/") else {
-            throw ArchiveError.unsafePath(path)
-        }
-
-        let components = normalized.split(separator: "/", omittingEmptySubsequences: true)
-        guard !components.contains("..") else {
-            throw ArchiveError.unsafePath(path)
-        }
-
-        let destination = components.reduce(root.standardizedFileURL) { partial, component in
-            partial.appendingPathComponent(String(component), isDirectory: false)
-        }
-        let rootPath = root.standardizedFileURL.path
-        let destinationPath = destination.standardizedFileURL.path
-
-        guard destinationPath == rootPath || destinationPath.hasPrefix(rootPath + "/") else {
-            throw ArchiveError.unsafePath(path)
-        }
-        return destination
+    private static func listDirect(at url: URL, password: String?) throws -> [ArchiveItem] {
+        var arguments = ["l", "-slt", "-ba", "-y", "-sccUTF-8"]
+        arguments.append(contentsOf: CompressionService.passwordArguments(password))
+        arguments.append(url.path)
+        let result = try SevenZipEngine.run(arguments: arguments)
+        return parseListOutput(result.standardOutput)
+            .filter { !$0.path.isEmpty && $0.path != "." }
+            .sorted(by: archivePathSort)
     }
 
-    private static func resolvedFileURL(
-        _ url: URL,
+    private static func runExtraction(
+        archiveURL: URL,
+        destinationURL: URL,
+        selectedPaths: Set<String>?,
+        password: String?,
         overwritePolicy: ArchiveOverwritePolicy,
-        fileManager: FileManager
-    ) -> URL {
-        guard fileManager.fileExists(atPath: url.path) else { return url }
-        if overwritePolicy == .overwrite { return url }
+        cancellationToken: CancellationToken,
+        progress: @escaping @Sendable (ExtractionProgress) -> Void
+    ) throws {
+        var arguments: [String] = [
+            "x", "-y", "-sccUTF-8", "-bsp1", "-bso1", "-bse1", "-bb1", "-spd",
+            "-o\(destinationURL.path)",
+            overwritePolicy == .overwrite ? "-aoa" : "-aou"
+        ]
+        arguments.append(contentsOf: CompressionService.passwordArguments(password))
+        if let selectedPaths {
+            for path in selectedPaths.sorted() {
+                arguments.append("-i!\(path)")
+            }
+        }
+        arguments.append(archiveURL.path)
 
-        let directory = url.deletingLastPathComponent()
-        let stem = url.deletingPathExtension().lastPathComponent
-        let ext = url.pathExtension
-        var counter = 2
+        _ = try SevenZipEngine.run(
+            arguments: arguments,
+            cancellationToken: cancellationToken
+        ) { fraction, path in
+            progress(
+                ExtractionProgress(
+                    fraction: fraction,
+                    currentPath: path,
+                    processedBytes: 0,
+                    totalBytes: 0
+                )
+            )
+        }
+    }
 
-        while true {
-            let candidateName = ext.isEmpty
-                ? "\(stem) (\(counter))"
-                : "\(stem) (\(counter)).\(ext)"
-            let candidate = directory.appendingPathComponent(candidateName)
-            if !fileManager.fileExists(atPath: candidate.path) {
+    private static func extractOuterArchive(_ archiveURL: URL, to directory: URL) throws -> URL {
+        var arguments = [
+            "x", "-y", "-sccUTF-8", "-bd",
+            "-o\(directory.path)",
+            archiveURL.path
+        ]
+        if archiveURL.pathExtension.lowercased() == "tgz" {
+            arguments.insert("-tgzip", at: 1)
+        }
+        _ = try SevenZipEngine.run(arguments: arguments)
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            throw ArchiveError.invalidArchive("无法读取外层压缩流")
+        }
+        for case let candidate as URL in enumerator {
+            if candidate.pathExtension.lowercased() == "tar" {
                 return candidate
             }
-            counter += 1
         }
+        throw ArchiveError.invalidArchive("压缩流中没有找到 TAR 数据")
     }
 
-    private static func applyMetadata(from entry: OpaquePointer, to url: URL) {
-        var attributes: [FileAttributeKey: Any] = [:]
+    private static func isTarCompressed(_ url: URL) -> Bool {
+        let name = url.lastPathComponent.lowercased()
+        return name.hasSuffix(".tar.gz") || name.hasSuffix(".tgz") ||
+            name.hasSuffix(".tar.bz2") || name.hasSuffix(".tbz") ||
+            name.hasSuffix(".tbz2") || name.hasSuffix(".tar.xz") ||
+            name.hasSuffix(".txz")
+    }
 
-        if archive_entry_mtime_is_set(entry) != 0 {
-            attributes[.modificationDate] = Date(
-                timeIntervalSince1970: TimeInterval(archive_entry_mtime(entry))
+    private static func parseListOutput(_ output: String) -> [ArchiveItem] {
+        let normalized = output
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let blocks = normalized.components(separatedBy: "\n\n")
+        var items: [ArchiveItem] = []
+
+        for block in blocks {
+            var fields: [String: String] = [:]
+            for line in block.split(separator: "\n", omittingEmptySubsequences: false) {
+                guard let separator = line.range(of: " = ") else { continue }
+                fields[String(line[..<separator.lowerBound])] = String(line[separator.upperBound...])
+            }
+            guard let path = fields["Path"], !path.isEmpty else { continue }
+            let attributes = fields["Attributes"]?.trimmingCharacters(in: .whitespaces) ?? ""
+            let size = Int64(fields["Size"] ?? "") ?? 0
+            let packedSize = Int64(fields["Packed Size"] ?? "") ?? 0
+            items.append(
+                ArchiveItem(
+                    path: path.replacingOccurrences(of: "\\", with: "/"),
+                    size: max(0, size),
+                    compressedSize: max(0, packedSize),
+                    modifiedAt: parseDate(fields["Modified"]),
+                    isDirectory: fields["Folder"] == "+",
+                    isSymlink: attributes.first == "l",
+                    isEncrypted: fields["Encrypted"] == "+",
+                    method: fields["Method"] ?? ""
+                )
             )
         }
-
-        let permissions = archive_entry_perm(entry)
-        if permissions != 0 {
-            attributes[.posixPermissions] = NSNumber(value: permissions)
-        }
-
-        if !attributes.isEmpty {
-            try? FileManager.default.setAttributes(attributes, ofItemAtPath: url.path)
-        }
+        return items
     }
 
-    private static func normalizedArchivePath(_ path: String) -> String {
-        path
-            .replacingOccurrences(of: "\\", with: "/")
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    private static func parseDate(_ value: String?) -> Date? {
+        guard let value, !value.isEmpty else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        formatter.timeZone = .current
+        return formatter.date(from: value)
     }
 
-    private static func errorMessage(_ reader: OpaquePointer) -> String {
-        guard let message = archive_error_string(reader) else {
-            return "未知错误"
+    private static func archivePathSort(_ lhs: ArchiveItem, _ rhs: ArchiveItem) -> Bool {
+        let lhsParts = lhs.path.split(separator: "/").map(String.init)
+        let rhsParts = rhs.path.split(separator: "/").map(String.init)
+        for (left, right) in zip(lhsParts, rhsParts) where left != right {
+            return left.localizedStandardCompare(right) == .orderedAscending
         }
-        return String(cString: message)
+        return lhsParts.count < rhsParts.count
     }
 
-    private static func mappedError(
-        _ reader: OpaquePointer,
-        fallback: ArchiveError
-    ) -> ArchiveError {
-        let message = errorMessage(reader)
-        let lowercased = message.lowercased()
-        if lowercased.contains("passphrase") || lowercased.contains("password") {
-            return .passphraseRequired
+    private static func validatedRelativePath(_ path: String) throws -> String {
+        let normalized = path.replacingOccurrences(of: "\\", with: "/")
+        let components = normalized.split(separator: "/", omittingEmptySubsequences: true)
+        guard !normalized.hasPrefix("/"), !components.contains("..") else {
+            throw ArchiveError.unsafePath(path)
         }
-        if lowercased.contains("truncated") || lowercased.contains("corrupt") {
-            return .invalidArchive(message)
-        }
-        return fallback
+        return normalized
     }
 }

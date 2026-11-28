@@ -4,7 +4,7 @@ import SwiftUI
 enum NanZipMain {
     static func main() {
         let firstArgument = CommandLine.arguments.dropFirst().first
-        if firstArgument == "--self-test" || firstArgument == "--compress-test" {
+        if firstArgument == "--self-test" || firstArgument == "--compress-test" || firstArgument == "--replace-test" || firstArgument == "--delete-test" {
             NanZipSelfTest.run()
         }
         NanZipApp.main()

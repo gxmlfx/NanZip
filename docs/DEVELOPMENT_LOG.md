@@ -87,3 +87,44 @@ Remaining immediate work:
   - `f23887e` feature implementation
   - `1c769a1` local checkpoint and handoff docs
 - Next documentation commit records the verified remote and final project state.
+
+## 2026-11-28 — Bandizip layout, 7-Zip engine and archive editing
+
+User requirements:
+
+- Improve the UI layout using official Bandizip web screenshots, not the locally installed app.
+- Replace macOS system libarchive with a faster open-source engine.
+- Add archive-content replacement if absent.
+- List remaining Bandizip-style features.
+
+Changes:
+
+- Removed the `CArchive`/system-libarchive bridge.
+- Bundled open-source 7-Zip 26.06 as `Contents/Resources/Helpers/7zz`.
+- Rewrote archive listing, extraction, compression and testing around the 7-Zip process.
+- Added archive editing service for add, replace and delete operations using atomic working copies.
+- Added progress parsing from 7-Zip output and password error classification.
+- Added recursive TAR.GZ/TAR.BZ2/TAR.XZ extraction.
+- Reworked the main window:
+  - Bandizip-style icon command bar.
+  - Left archive tree.
+  - Multi-column file table with packed size, original size, ratio, modified date and method.
+  - Bottom selection and archive statistics.
+  - New Archive page with input list and labeled settings.
+- Added UI actions for Add, Replace, Delete and Test.
+- Added bundled 7-Zip third-party notice.
+
+Official screenshot research:
+
+- macOS screenshots: https://www.bandisoft.com/bandizip.mac/screenshots/
+- Windows screenshots: https://www.bandisoft.com/bandizip/screenshots/
+- Detailed notes: `docs/BANDIZIP_UI_RESEARCH.md`
+
+Verification:
+
+- ZIP/7Z/TAR/TAR.GZ/TAR.BZ2/TAR.XZ creation passed.
+- ZIP/7Z password creation passed.
+- ZIP/7Z/encrypted ZIP entry replacement passed.
+- 7-Zip executable is signed inside the app and runs from the bundle.
+- Finder and Quick Look extension packaging still signs successfully.
+- Feature gap checklist: `docs/BANDIZIP_FEATURE_GAP.md`.
